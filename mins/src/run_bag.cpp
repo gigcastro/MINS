@@ -68,7 +68,7 @@ shared_ptr<Options> op;
 shared_ptr<State_Logger> save;
 
 rosbag::View view;
-rosbag::Bag bag;
+vector<rosbag::Bag> bags; // Changed to vector to support multiple bags
 vector<rosbag::MessageInstance> msgs;
 ros::Time time_init, time_finish;
 vector<map<double, int>> cam_map; // {cam[i], {img_time, idx in vec}}
@@ -340,9 +340,42 @@ void system_setup(int argc, char **argv) {
   }
 
   // Load rosbag here, and find messages we can play
-  PRINT2("[BAG] Reading the bag file    ");
-  bag.open(op->sys->path_bag, rosbag::bagmode::Read);
-  view.addQuery(bag);
+  // Parse multiple bag file paths separated by ":"
+  PRINT2("[BAG] Parsing bag file paths\n");
+  vector<string> bag_paths;
+  string path_string = op->sys->path_bag;
+  size_t path_start = 0;
+  size_t path_end = path_string.find(":");
+  
+  // Split the string by ":" and add each path (except the last one)
+  while (path_end != string::npos) {
+    string path = path_string.substr(path_start, path_end - path_start);
+    if (!path.empty()) {
+      bag_paths.push_back(path);
+      PRINT2("[BAG] Found bag path: %s\n", path.c_str());
+    }
+    path_start = path_end + 1;
+    path_end = path_string.find(":", path_start);
+  }
+  
+  // Add the last (or only) path
+  string last_path = path_string.substr(path_start);
+  if (!last_path.empty()) {
+    bag_paths.push_back(last_path);
+    PRINT2("[BAG] Found bag path: %s\n", last_path.c_str());
+  }
+  
+  PRINT2("[BAG] Total bag files to process: %d\n", (int)bag_paths.size());
+  
+  // Open all bag files and add them to the view, which handles synchronization and merging messages from multiple bags
+  PRINT2("[BAG] Reading bag files       ");
+  bags.resize(bag_paths.size());
+  for (size_t i = 0; i < bag_paths.size(); i++) {
+    PRINT2("[BAG] Opening bag %d/%d: %s\n", (int)(i+1), (int)bag_paths.size(), bag_paths[i].c_str());
+    bags[i].open(bag_paths[i], rosbag::bagmode::Read);
+    view.addQuery(bags[i]);
+  }
+  PRINT2("[BAG] Successfully opened %d bag file(s)\n", (int)bags.size());
 
   // Check to make sure we have data to play
   if (view.size() == 0) {
@@ -350,6 +383,7 @@ void system_setup(int argc, char **argv) {
     ros::shutdown();
     exit(EXIT_FAILURE);
   }
+  PRINT2("[BAG] Total messages in view: %d\n", (int)view.size());
 
   // load rosbag msg itr
   msgs.reserve(view.size());
