@@ -1,5 +1,14 @@
 # MINS
-[![Docker Image CI](https://github.com/rpng/MINS/actions/workflows/docker-image.yml/badge.svg)](https://github.com/rpng/MINS/actions/workflows/docker-image.yml)
+[![ROS1 Melodic (Ubuntu 18.04)](https://github.com/rpng/MINS/actions/workflows/build_ros1_melodic.yml/badge.svg)](https://github.com/rpng/MINS/actions/workflows/build_ros1_melodic.yml)
+[![ROS1 Noetic (Ubuntu 20.04)](https://github.com/rpng/MINS/actions/workflows/build_ros1_noetic.yml/badge.svg)](https://github.com/rpng/MINS/actions/workflows/build_ros1_noetic.yml)
+[![ROS2 Humble (Ubuntu 22.04)](https://github.com/rpng/MINS/actions/workflows/build_ros2.yml/badge.svg)](https://github.com/rpng/MINS/actions/workflows/build_ros2.yml)
+[![ROS2 Jazzy (Ubuntu 24.04)](https://github.com/rpng/MINS/actions/workflows/build_ros2_jazzy.yml/badge.svg)](https://github.com/rpng/MINS/actions/workflows/build_ros2_jazzy.yml)
+[![ROS2 Lyrical (Ubuntu 26.04)](https://github.com/rpng/MINS/actions/workflows/build_ros2_lyrical.yml/badge.svg)](https://github.com/rpng/MINS/actions/workflows/build_ros2_lyrical.yml)
+[![ROS-free (Ubuntu 22.04)](https://github.com/rpng/MINS/actions/workflows/build_rosfree.yml/badge.svg)](https://github.com/rpng/MINS/actions/workflows/build_rosfree.yml)
+[![ROS-free (Ubuntu 24.04)](https://github.com/rpng/MINS/actions/workflows/build_rosfree_24_04.yml/badge.svg)](https://github.com/rpng/MINS/actions/workflows/build_rosfree_24_04.yml)
+[![ROS-free (Ubuntu 26.04)](https://github.com/rpng/MINS/actions/workflows/build_rosfree_26_04.yml/badge.svg)](https://github.com/rpng/MINS/actions/workflows/build_rosfree_26_04.yml)
+[![macOS (arm64)](https://github.com/rpng/MINS/actions/workflows/build_macos.yml/badge.svg)](https://github.com/rpng/MINS/actions/workflows/build_macos.yml)
+[![Windows (x64)](https://github.com/rpng/MINS/actions/workflows/build_windows.yml/badge.svg)](https://github.com/rpng/MINS/actions/workflows/build_windows.yml)
 
 An efficient, robust, and tightly-coupled **Multisensor-aided Inertial Navigation System (MINS)** which is capable of 
 flexibly fusing all five sensing modalities (**IMU**, **wheel** **encoders**, **camera**, **GNSS**, and **LiDAR**) in a filtering 
@@ -27,7 +36,31 @@ Exemplary use case of MINS:
 
 ## Dependency
 MINS is tested on Ubuntu 18 and 20 and only requires corresponding ROS ([Melodic](https://wiki.ros.org/melodic) and [Noetic](https://wiki.ros.org/noetic)).
-* Default Eigen version will be 3.3.7 (Noetic) or lower, but if one has a higher version the compilation can be failed due to thirdparty library (libpointmatcher) for LiDAR.
+
+## ROS2
+
+For instructions and dependencies for building the package on ros2 you can look into the Dockerfile. After building and sourcing, you should be able to start the simulation with 
+
+```sh
+ros2 run mins simulation mins/config/simulation/config.yaml
+```
+
+You can then start rviz2 to look at the path as estimated through MINS.
+
+For running in real mode you can use:
+
+```sh
+ros2 run mins subscribe mins/config/euroc_mav/config.yaml
+```
+
+And then play a bag in another terminal, for example from the [euroc_mav](https://projects.asl.ethz.ch/datasets/doku.php?id=kmavvisualinertialdatasets), after converting it using [rosbags](https://pypi.org/project/rosbags/):
+
+```sh
+ros2 bag play data/MH_01_easy
+```
+
+Again, you can look at the paths and the pose estimated by MINS with rviz2.
+
 
 ## Build and Source
 ```
@@ -43,6 +76,7 @@ source devel/setup.bash
 
 ![alt text](thirdparty/simulation.png)
 
+
 ### Real-World Dataset
 #### Directly reading the ros bag file
 ```roslaunch mins rosbag.launch config:=kaist/kaist_LC path_gt:=urban30.txt path_bag:=urban30.bag```
@@ -50,19 +84,13 @@ source devel/setup.bash
 ![alt text](thirdparty/real_bag.png)
 
 Here are the rosbag files and ground truths we used in the evaluation. To be specific, we used [kaist2bag](https://github.com/tsyxyz/kaist2bag) to convert all sensor readings to rosbag files. All rights reserved to [KAIST urban dataset](https://sites.google.com/view/complex-urban-dataset).
-| Rosbag  | GT (csv) | GT (txt) | Rosbag  | GT (csv) | GT (txt) | 
-| --- | --- | --- | --- | --- | --- | 
-|[urban18.bag](https://drive.google.com/open?id=1WuFvsgc416E5oi7ROLYy0Y6ekClVARGV&usp=drive_copy)|[urban18.csv](https://drive.google.com/open?id=1rqXJwwex2lfAJrLUZY9fUs98ePzZIKRc&usp=drive_copy)|[urban18.txt](https://drive.google.com/open?id=11rchRZvbDuSywUrDnlOYeBF2woS3GSnC&usp=drive_copy)|[urban19.bag](https://drive.google.com/open?id=1QjGEvMjNsk3fJeQV6GuZ1MiVGvpnMXuL&usp=drive_copy)|[urban19.csv](https://drive.google.com/open?id=1epB0k7YOdMraywCuedowHB7wf6kPYnqd&usp=drive_copy)|[urban19.txt](https://drive.google.com/open?id=1TBsiouJSThTwcMRYyY65gAIY0f3zXhaX&usp=drive_copy)|
-|[urban20.bag](https://drive.google.com/open?id=1joISXo2zvBy03gbQzUC_LTSmoIXaZ5u1&usp=drive_copy)|[urban20.csv](https://drive.google.com/open?id=1fpEixMNjoq8gT-qMw0GX0fiULt-lyP3M&usp=drive_copy)|[urban20.txt](https://drive.google.com/open?id=1UObOWam0nI1s4TstRZ_UTaypkaaVV9gA&usp=drive_copy)|[urban21.bag](https://drive.google.com/open?id=17Fq1ixHwPaLwMGZrx2oZp-Aw0piXc7Kv&usp=drive_copy)|[urban21.csv](https://drive.google.com/open?id=1tmXnE6rOnErfuMYhVPZFpNCeJDkNHvVe&usp=drive_copy)|[urban21.txt](https://drive.google.com/open?id=1JZSFhr66V2QEyesrmcyeYDU4O2e7eetV&usp=drive_copy)|
-|[urban22.bag](https://drive.google.com/open?id=1PrciTcIyn5URc9iKW5TOQ9V-C6Q_hI4Z&usp=drive_copy)|[urban22.csv](https://drive.google.com/open?id=1wjW8wq-FVno7lo7uljlND4DuA9wNivFV&usp=drive_copy)|[urban22.txt](https://drive.google.com/open?id=1sxOamJJytLVBTzgejGRr3kFqcCpDk7yM&usp=drive_copy)|[urban23.bag](https://drive.google.com/open?id=1ptcc5joAl1LhSoVzf9IgGvDqm93IFoBx&usp=drive_copy)|[urban23.csv](https://drive.google.com/open?id=1HFZpkNBASZ7CEGrjQqTRpnuyedW4mKpL&usp=drive_copy)|[urban23.txt](https://drive.google.com/open?id=1ICzaR6Z5mDkR1KM3vkHejCgdsMJNIjiC&usp=drive_copy)|
-|[urban24.bag](https://drive.google.com/open?id=1GqbFoQd6R8kzRX4VqWdtoy5PnEZxTx4O&usp=drive_copy)|[urban24.csv](https://drive.google.com/open?id=16U01BQbWqndbsutXt3iCK2FQ_dZ7kHQ_&usp=drive_copy)|[urban24.txt](https://drive.google.com/open?id=1PTUKyoMkG01MLebI1CTwfp6C6RVlFAkC&usp=drive_copy)|[urban25.bag](https://drive.google.com/open?id=1YWyui_bOQuSnmP_-NPsQ-G39fnElZL_o&usp=drive_copy)|[urban25.csv](https://drive.google.com/open?id=1vZqH2RKrR5OOUVK1fw8RSmsRHa5RnteV&usp=drive_copy)|[urban25.txt](https://drive.google.com/open?id=11mH5fsPBd7kPktLfLaaoKQjYNUbIm1AL&usp=drive_copy)|
-|[urban26.bag](https://drive.google.com/open?id=1zyFSLg5nDPGwjOAmqwZIjitJmp7Ate3V&usp=drive_copy)|[urban26.csv](https://drive.google.com/open?id=1sriL5sv-VgjG7T7kFjRFz_MiojmRAGfF&usp=drive_copy)|[urban26.txt](https://drive.google.com/open?id=1ERGCd4RR0vav7Cbb2Agw9UA2AJOE07nQ&usp=drive_copy)|[urban27.bag](https://drive.google.com/open?id=1x5FWI7ds5fFDuz6VoQYOsDoKEzFhQFaA&usp=drive_copy)|[urban27.csv](https://drive.google.com/open?id=1hT2P2AJGggmo6W-oD8Qowqj2lZfuAUzL&usp=drive_copy)|[urban27.txt](https://drive.google.com/open?id=1forf325XmRLRq07rQmOrOnNZEl3HDmt-&usp=drive_copy)|
-|[urban28.bag](https://drive.google.com/open?id=14xOmDZ_4ktLZS18ghi7JTPyHXj1awDWr&usp=drive_copy)|[urban28.csv](https://drive.google.com/open?id=1H_xcy5hk9V2i27g3DPxYMqSXIiF6dGBp&usp=drive_copy)|[urban28.txt](https://drive.google.com/open?id=1dFRr7fOySzvmXQcSLamo5Zc_zw_9WHzn&usp=drive_copy)|[urban29.bag](https://drive.google.com/open?id=1sOYQjvCZUDxG4PGuWia7GsrMntdvUqPq&usp=drive_copy)|[urban29.csv](https://drive.google.com/open?id=1hi8E0RptAK4rpbo-eQc4ArFQRy6qO68O&usp=drive_copy)|[urban29.txt](https://drive.google.com/open?id=1mTUr-QwOLXjFx8h5egmhXm4O4n93S9tP&usp=drive_copy)|
-|[urban30.bag](https://drive.google.com/open?id=1bw1SJxTQEL74dZTOuD8USnCb5skZ59hY&usp=drive_copy)|[urban30.csv](https://drive.google.com/open?id=1rpLEkMUW1vao854l2mGXKDYRAo48_rFF&usp=drive_copy)|[urban30.txt](https://drive.google.com/open?id=1LCHy_ncIKxgfV6HZy_PUlsEWaczhv3Dk&usp=drive_copy)|[urban31.bag](https://drive.google.com/open?id=1cKRyxgeeWzRGlKJgr2a_GQdOkn7V255H&usp=drive_copy)|[urban31.csv](https://drive.google.com/open?id=1rVigiMX86JT4H9j5y2P9xmDoMkVYx8sj&usp=drive_copy)|[urban31.txt](https://drive.google.com/open?id=14uIkrra4MEez8QV0_GtcUi_8x19vlFb3&usp=drive_copy)|
-|[urban32.bag](https://drive.google.com/open?id=1c4fmUX_UBYOW1Y2j0Kr1ViUKBcAb5r59&usp=drive_copy)|[urban32.csv](https://drive.google.com/open?id=16Zk5sZSu7J1LmaKG7Xs6cCUz4x39Ecew&usp=drive_copy)|[urban32.txt](https://drive.google.com/open?id=1K_FwA9_RQxlz3W9NXycrceaZDIoQuUlC&usp=drive_copy)|[urban33.bag](https://drive.google.com/open?id=1tdaIB2xz7o2bfDOLySJijn9Bdk7v_v0V&usp=drive_copy)|[urban33.csv](https://drive.google.com/open?id=1ERMSVuqFBUTaHqOhQi9gKpCEH9092b7l&usp=drive_copy)|[urban33.txt](https://drive.google.com/open?id=1Gzy-hq6UkA-G0S7mEd1--5QQqmev_fAC&usp=drive_copy)|
-|[urban34.bag](https://drive.google.com/open?id=1_K-Q_KfLvj8-xrJy2RL4XMOh3nXQmPAe&usp=drive_copy)|[urban34.csv](https://drive.google.com/open?id=10VveQ2LJ0hNEn3WZ76GdKAU_VdHV24cC&usp=drive_copy)|[urban34.txt](https://drive.google.com/open?id=1ie7KFQC3q9LBsViHkYnU6n1eQZv18ayw&usp=drive_copy)|[urban35.bag](https://drive.google.com/open?id=10oUZ1u7kgxHYjCQGNRApvt7nMl15Ll4V&usp=drive_copy)|[urban35.csv](https://drive.google.com/open?id=1L046y2g6iBCvTovA94Fh9UAussXx6lZ2&usp=drive_copy)|[urban35.txt](https://drive.google.com/open?id=1X_TuHUt8sLRN9DPjAEEqydyxtGVnvXzb&usp=drive_copy)|
-|[urban36.bag](https://drive.google.com/open?id=1DWEnJ3pluJmNQUtGABsELftqyO7GzxL4&usp=drive_copy)|[urban36.csv](https://drive.google.com/open?id=1A14eAcsBgXaKpwwPRoyArxPRSwAcU3TW&usp=drive_copy)|[urban36.txt](https://drive.google.com/open?id=1b1bTU780RcHq-wiFvwIx8bqPypFDt252&usp=drive_copy)|[urban37.bag](https://drive.google.com/open?id=1v27W0Baw2iLdzu7Rwh0g_KMhf4FfUGP9&usp=drive_copy)|[urban37.csv](https://drive.google.com/open?id=1-USD8fNa-Dif0riGh21CymQh0_l9mMCb&usp=drive_copy)|[urban37.txt](https://drive.google.com/open?id=1KOakD6gNawaW0iD8VLg58GeujzHqMpcf&usp=drive_copy)|
-|[urban38.bag](https://drive.google.com/open?id=1LJEi4whPwONl61NAp54gaJjDBZkCwk_Q&usp=drive_copy)|[urban38.csv](https://drive.google.com/open?id=1-EVRyxGsSrQyrxZvP5faD9oYbScbkGe9&usp=drive_copy)|[urban38.txt](https://drive.google.com/open?id=1mcD4AfFUSQHK5KAPmu2-nSvvGL1NufI6&usp=drive_copy)|[urban39.bag](https://drive.google.com/open?id=1JmdHv_GWeHEFGJj37UXV9KF3iQKTHLm-&usp=drive_copy)|[urban39.csv](https://drive.google.com/open?id=1CGRIAg8i_xyJdaWDn93n_IWfjfPiZPjU&usp=drive_copy)|[urban39.txt](https://drive.google.com/open?id=1TYjr1dK6a2wgSIWpKimvwPIAR_sr4-fF&usp=drive_copy)|
+
+We provide mirrors of the converted rosbags (`urban18`-`urban39`) and their ground truths at the links below:
+* [Hugging Face - kaist-urban-dataset](https://huggingface.co/datasets/gladiator7737/kaist-urban-dataset)
+* [UD Robots NAS](https://gofile.me/7B392/kNl7XHqHx) (scan the QR code below)
+
+![KAIST dataset QR code](thirdparty/kaist-QRcode.png)
+
 #### Subscribing to the ros messages
 ```roslaunch mins subscribe.launch config:=euroc_mav rosbag:=V1_03_difficult.bag bag_start_time:=0```
 
@@ -75,7 +103,6 @@ Here are the rosbag files and ground truths we used in the evaluation. To be spe
 This project was built on top of the following libraries which are in the thirdparty folder.
 * [OpenVINS](https://github.com/rpng/open_vins): Open-source filter-based visual-inertial estimator.
 * [ikd-tree](https://github.com/hku-mars/ikd-Tree): Incremental k-d tree.
-* [libpointmatcher](https://github.com/ethz-asl/libpointmatcher): Modular Iterative Closest Point library based on [libnabo](https://github.com/ethz-asl/libnabo)
 
 ## Credit / Licensing
 

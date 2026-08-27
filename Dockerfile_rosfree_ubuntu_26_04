@@ -1,0 +1,18 @@
+# Builds the MINS core library + headless CLI with NO ROS at all, to prove the
+# core stays ROS-free. Plain cmake, only apt + bundled thirdparty deps.
+FROM ubuntu:26.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install --no-install-recommends -y \
+    build-essential cmake git ca-certificates \
+    libeigen3-dev libopencv-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /work
+
+# Now the rest of the tree. MINS core + headless CLI, no ROS.
+# ov_core is pulled in via add_subdirectory by ROS1.cmake.
+COPY . /work/src/MINS
+RUN cmake -S src/MINS/mins -B build/mins \
+      -DCMAKE_BUILD_TYPE=Release -DENABLE_ROS=OFF -DENABLE_ARUCO_TAGS=OFF \
+ && cmake --build build/mins -j"$(nproc)"

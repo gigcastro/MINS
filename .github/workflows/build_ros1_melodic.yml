@@ -1,0 +1,27 @@
+name: ROS1 Melodic (Ubuntu 18.04)
+
+on:
+  push:
+    branches: [ "master" ]
+  pull_request:
+    branches: [ "master" ]
+
+jobs:
+
+  build_1804:
+    name: "ROS1 Ubuntu 18.04"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the Docker image (Melodic 18.04)
+        run: docker build . --file Dockerfile_melodic_18_04 --tag mins:melodic
+      - name: Run MINS simulation (smoke test)
+        run: docker run --rm --entrypoint /bin/bash mins:melodic -c "source /opt/ros/melodic/setup.bash && source /catkin_ws/devel/setup.bash && export OMP_NUM_THREADS=1 && roslaunch mins simulation.launch sys_verbosity:=3"
+
+  # build_1604 ("ROS1 Ubuntu 16.04", Kinetic): PARKED - revisit later.
+  # Ubuntu 16.04/Xenial ships Eigen 3.2, but MINS's modern Eigen/Ceres usage needs
+  # Eigen >= 3.3, so a clean 16.04 build is unlikely without dedicated dependency
+  # work. To re-enable:
+  #   1. Add Dockerfile_kinetic_16_04 (FROM osrf/ros:kinetic-perception, python-catkin-tools,
+  #      Eigen upgraded to 3.3.7 from source), and
+  #   2. Add a build_1604 job here mirroring the one above.

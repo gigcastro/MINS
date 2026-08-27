@@ -26,11 +26,14 @@
  */
 
 #include "functions/ResultTrajectory.h"
+#if ROS_AVAILABLE == 2
+#include "rclcpp/rclcpp.hpp"
+#else
 #include "ros/ros.h"
+#endif
 #include "utils/Loader.h"
+#include "utils/fs_compat.h"
 #include <Eigen/Eigen>
-#include <boost/algorithm/string.hpp>
-#include <boost/filesystem.hpp>
 #include <map>
 #include <string>
 #include <utility>
@@ -38,9 +41,15 @@
 
 using namespace std;
 using namespace ov_eval;
-using namespace boost;
 using namespace Eigen;
-typedef boost::filesystem::path PATH;
+typedef fs::path PATH;
+// replace_all_copy was the only boost::algorithm function we used
+static string replace_all_copy(string s, const string &from, const string &to) {
+  for (size_t i = s.find(from); i != string::npos; i = s.find(from, i + to.size()))
+    s.replace(i, from.size(), to);
+  return s;
+}
+
 typedef vector<PATH> VEC_PATH;
 // file and directory paths
 string align_mode, folder_groundtruths, folder_algorithms;
@@ -112,7 +121,11 @@ int main(int argc, char **argv) {
 
   // Loop through each algorithm type
   for (auto &path_al : path_als) {
+#if ROS_AVAILABLE == 2
+    if (!rclcpp::ok())
+#else
     if (!ros::ok())
+#endif
       break;
 
     // Debug print
@@ -209,18 +222,32 @@ void basic_setup(int argc, char **argv) {
   folder_groundtruths = argc > 2 ? argv[2] : "";
   folder_algorithms = argc > 3 ? argv[3] : "";
 
+#if ROS_AVAILABLE == 2
   // overwrite options if ROS params exist
+  rclcpp::init(argc, argv);
+  rclcpp::NodeOptions options;
+
+  options.allow_undeclared_parameters(true);
+  options.automatically_declare_parameters_from_overrides(true);
+  auto node = std::make_shared<rclcpp::Node>("run_comparison", options);
+
+  node->get_parameter<std::string>("align_mode", align_mode);
+  node->get_parameter<std::string>("path_gts", folder_groundtruths);
+  node->get_parameter<std::string>("path_alg", folder_algorithms);
+  node->get_parameter<int>("viz_type", viz_type);
+#else
   ros::init(argc, argv, "run_comparison");
   ros::param::get("/run_comparison/align_mode", align_mode);
   ros::param::get("/run_comparison/path_gts", folder_groundtruths);
   ros::param::get("/run_comparison/path_alg", folder_algorithms);
   ros::param::get("/run_comparison/viz_type", viz_type);
+#endif
 }
 
 /// Get paths of the ground truths
 VEC_PATH get_path_groundtruths() {
   VEC_PATH path_gts_local;
-  for (const auto &p : boost::filesystem::recursive_directory_iterator(folder_groundtruths)) {
+  for (const auto &p : fs::recursive_directory_iterator(folder_groundtruths)) {
     if (p.path().extension() == ".txt") {
       path_gts_local.push_back(p.path());
     }
@@ -245,8 +272,8 @@ VEC_PATH get_path_groundtruths() {
 VEC_PATH get_path_algorithms() {
   // Also create empty statistic objects for each of our datasets
   VEC_PATH path_alg;
-  for (const auto &entry : boost::filesystem::directory_iterator(folder_algorithms)) {
-    if (boost::filesystem::is_directory(entry)) {
+  for (const auto &entry : fs::directory_iterator(folder_algorithms)) {
+    if (fs::is_directory(entry)) {
       path_alg.push_back(entry.path());
     }
   }
@@ -258,8 +285,8 @@ VEC_PATH get_path_algorithms() {
   for (auto &path : path_alg) {
     // Get the list of datasets this algorithm records
     map<string, PATH> path_algo_datasets;
-    for (auto &entry : boost::filesystem::directory_iterator(path)) {
-      if (boost::filesystem::is_directory(entry)) {
+    for (auto &entry : fs::directory_iterator(path)) {
+      if (fs::is_directory(entry)) {
         found_data.push_back(entry.path().filename().string());
         path_algo_datasets.insert({entry.path().filename().string(), entry.path()});
       }
@@ -357,8 +384,8 @@ map<string, map<PATH, pair<Statistics, Statistics>>> NEES_init() {
 /// Get files given directory path
 map<string, PATH> get_list_of_datasets(const PATH &path) {
   map<string, PATH> path_algo_datasets;
-  for (auto &entry : boost::filesystem::directory_iterator(path)) {
-    if (boost::filesystem::is_directory(entry)) {
+  for (auto &entry : fs::directory_iterator(path)) {
+    if (fs::is_directory(entry)) {
       path_algo_datasets.insert({entry.path().filename().string(), entry.path()});
     }
   }
@@ -367,7 +394,7 @@ map<string, PATH> get_list_of_datasets(const PATH &path) {
 
 /// search for specific extentioned files for analysis.
 void get_paths_of_run_files(map<string, PATH> datasets, const PATH &path_gt, vector<string> &run_paths, vector<string> &time_paths) {
-  for (auto &entry : boost::filesystem::directory_iterator(datasets.at(path_gt.stem().string()))) {
+  for (auto &entry : fs::directory_iterator(datasets.at(path_gt.stem().string()))) {
     // Files containing timing record
     if (entry.path().extension() == ".time") {
       time_paths.push_back(entry.path().string());
@@ -499,7 +526,6 @@ void print_latex_ate_rmse() {
   for (int i = 0; i < (int)path_gts.size(); i++)
     vv_gt.at(i / max_col).push_back(path_gts.at(i));
 
-
   for (const auto &v_gt : vv_gt) {
     if (v_gt.empty())
       break;
@@ -527,8 +553,7 @@ void print_latex_ate_rmse() {
         auto rmse = alg.second.at(gt);
         if (rmse.first.values.empty() || rmse.second.values.empty()) {
           printf(" & - / -");
-        }
-        else {
+        } else {
           printf(" & %.3f", rmse.first.mean);
           printf(" / %.3f", rmse.second.mean);
         }
@@ -538,7 +563,6 @@ void print_latex_ate_rmse() {
     printf("  \\end{tabular}\n \\end{adjustbox}\n\\end{table}\n\\vspace{-0.8cm}\n\n");
   }
 }
-
 
 /// Print ATE RMSE divided by the length of the trajectory (unit 1km) in Latex table format
 void print_latex_ate_1km() {
@@ -564,18 +588,16 @@ void print_latex_ate_1km() {
       auto rmse = alg.second.at(path_gt);
       if (rmse.second.values.empty()) {
         printf(" & -");
-      }
-      else {
+      } else {
         assert(GT_DIST.at(path_gt) != 0);
         printf(" & %.2f", rmse.second.mean / GT_DIST.at(path_gt) * 1000); // per 1km
-//        printf(" & %.2f", rmse.second.mean );
+                                                                          //        printf(" & %.2f", rmse.second.mean );
       }
     }
     printf(" \\\\\n");
   }
   printf("  \\end{tabular}\n \\end{adjustbox}\n\\end{table*}\n\n\n");
 }
-
 
 /// Print RPE RMSE in Latex table format
 void print_latex_rpe_rmse_std() {
@@ -593,7 +615,6 @@ void print_latex_rpe_rmse_std() {
   for (int i = 0; i < (int)path_gts.size(); i++)
     vv_gt.at(i / max_col).push_back(path_gts.at(i));
 
-
   for (const auto &v_gt : vv_gt) {
     if (v_gt.empty())
       break;
@@ -601,8 +622,7 @@ void print_latex_rpe_rmse_std() {
     string ls = "c";
     for (auto gt : v_gt)
       ls += "c";
-    printf("\\begin{table*}[t]\n \\begin{adjustbox}{width=%.1f\\textwidth,center}\n  \\begin{tabular}{%s}\n   \\toprule\n   ",
-           (double)v_gt.size() / max_col, ls.c_str());
+    printf("\\begin{table*}[t]\n \\begin{adjustbox}{width=%.1f\\textwidth,center}\n  \\begin{tabular}{%s}\n   \\toprule\n   ", (double)v_gt.size() / max_col, ls.c_str());
 
     // Name of the dataset with multi-column
     for (const auto &g : v_gt)
@@ -610,9 +630,9 @@ void print_latex_rpe_rmse_std() {
     printf("\\\\\n   ");
 
     // RMSE, NEES, and/or Time header
-//    for (int i = 0; i < (int)v_gt.size(); i++)
-//      printf(" & \\textbf{RMSE (deg / m)}");
-//    printf("\\\\ \\midrule\n");
+    //    for (int i = 0; i < (int)v_gt.size(); i++)
+    //      printf(" & \\textbf{RMSE (deg / m)}");
+    //    printf("\\\\ \\midrule\n");
 
     // Contents
     for (const auto &alg : RPE) {
@@ -624,8 +644,7 @@ void print_latex_rpe_rmse_std() {
         rmse.second.calculate();
         if (rmse.first.values.empty() || rmse.second.values.empty()) {
           printf(" & - / -");
-        }
-        else {
+        } else {
           printf(" & %.3f", rmse.first.mean);
           printf(" $\\pm$ %.3f", rmse.first.std);
           printf(" / %.3f", rmse.second.mean);
@@ -637,7 +656,6 @@ void print_latex_rpe_rmse_std() {
     printf("  \\end{tabular}\n \\end{adjustbox}\n\\end{table*}\n\n");
   }
 }
-
 
 /// Print RPE median error in Latex table format
 void print_latex_rpe_median() {
@@ -655,7 +673,6 @@ void print_latex_rpe_median() {
   for (int i = 0; i < (int)path_gts.size(); i++)
     vv_gt.at(i / max_col).push_back(path_gts.at(i));
 
-
   for (const auto &v_gt : vv_gt) {
     if (v_gt.empty())
       break;
@@ -663,8 +680,7 @@ void print_latex_rpe_median() {
     string ls = "c";
     for (auto gt : v_gt)
       ls += "c";
-    printf("\\begin{table*}[t]\n \\begin{adjustbox}{width=%.1f\\textwidth,center}\n  \\begin{tabular}{%s}\n   \\toprule\n   ",
-           (double)v_gt.size() / max_col, ls.c_str());
+    printf("\\begin{table*}[t]\n \\begin{adjustbox}{width=%.1f\\textwidth,center}\n  \\begin{tabular}{%s}\n   \\toprule\n   ", (double)v_gt.size() / max_col, ls.c_str());
 
     // Name of the dataset with multi-column
     for (const auto &g : v_gt)
@@ -672,9 +688,9 @@ void print_latex_rpe_median() {
     printf("\\\\\n   ");
 
     // RMSE, NEES, and/or Time header
-//    for (int i = 0; i < (int)v_gt.size(); i++)
-//      printf(" & \\textbf{RMSE (deg / m)}");
-//    printf("\\\\ \\midrule\n");
+    //    for (int i = 0; i < (int)v_gt.size(); i++)
+    //      printf(" & \\textbf{RMSE (deg / m)}");
+    //    printf("\\\\ \\midrule\n");
 
     // Contents
     for (const auto &alg : RPE) {
@@ -686,8 +702,7 @@ void print_latex_rpe_median() {
         rmse.second.calculate();
         if (rmse.first.values.empty() || rmse.second.values.empty()) {
           printf(" & - / -");
-        }
-        else {
+        } else {
           printf(" & %.3f", rmse.first.median);
           printf(" / %.3f", rmse.second.median);
         }
@@ -754,7 +769,7 @@ void print_matlab_ate_time_mean_std() {
           break;
         }
       }
-      if(!MATLAB_find)
+      if (!MATLAB_find)
         break;
       string name = name_full.substr(0, id);
       string number = name_full.substr(id);
@@ -775,92 +790,92 @@ void print_matlab_ate_time_mean_std() {
   assert(MATLAB_find);
   for (auto name : name_alg_stat) {
     printf("%s_rmse_ori_mean = {", name.first.c_str());
-    for (const auto& alg : name.second) {
+    for (const auto &alg : name.second) {
       printf("'%s', ", replace_all_copy(alg.first, "_", "\\_").c_str());
     }
     printf("\b\b; ");
-    for (const auto& alg : name.second) {
+    for (const auto &alg : name.second) {
       printf("%.4f, ", alg.second.rmse_ori.mean);
     }
     printf("\b\b};\n");
     printf("%s_rmse_ori_std  = {", name.first.c_str());
-    for (const auto& alg : name.second) {
+    for (const auto &alg : name.second) {
       printf("'%s', ", replace_all_copy(alg.first, "_", "\\_").c_str());
     }
     printf("\b\b; ");
-    for (const auto& alg : name.second) {
+    for (const auto &alg : name.second) {
       printf("%.4f, ", alg.second.rmse_ori.std);
     }
     printf("\b\b};\n");
     printf("%s_rmse_pos_mean = {", name.first.c_str());
-    for (const auto& alg : name.second) {
+    for (const auto &alg : name.second) {
       printf("'%s', ", replace_all_copy(alg.first, "_", "\\_").c_str());
     }
     printf("\b\b; ");
-    for (const auto& alg : name.second) {
+    for (const auto &alg : name.second) {
       printf("%.4f, ", alg.second.rmse_pos.mean);
     }
     printf("\b\b};\n");
     printf("%s_rmse_pos_std  = {", name.first.c_str());
-    for (const auto& alg : name.second) {
+    for (const auto &alg : name.second) {
       printf("'%s', ", replace_all_copy(alg.first, "_", "\\_").c_str());
     }
     printf("\b\b; ");
-    for (const auto& alg : name.second) {
+    for (const auto &alg : name.second) {
       printf("%.4f, ", alg.second.rmse_pos.std);
     }
     printf("\b\b};\n");
     printf("%s_nees_ori_mean = {", name.first.c_str());
-    for (const auto& alg : name.second) {
+    for (const auto &alg : name.second) {
       printf("'%s', ", replace_all_copy(alg.first, "_", "\\_").c_str());
     }
     printf("\b\b; ");
-    for (const auto& alg : name.second) {
+    for (const auto &alg : name.second) {
       printf("%.4f, ", alg.second.nees_ori.mean);
     }
     printf("\b\b};\n");
     printf("%s_nees_ori_std  = {", name.first.c_str());
-    for (const auto& alg : name.second) {
+    for (const auto &alg : name.second) {
       printf("'%s', ", replace_all_copy(alg.first, "_", "\\_").c_str());
     }
     printf("\b\b; ");
-    for (const auto& alg : name.second) {
+    for (const auto &alg : name.second) {
       printf("%.4f, ", alg.second.nees_ori.std);
     }
     printf("\b\b};\n");
     printf("%s_nees_pos_mean = {", name.first.c_str());
-    for (const auto& alg : name.second) {
+    for (const auto &alg : name.second) {
       printf("'%s', ", replace_all_copy(alg.first, "_", "\\_").c_str());
     }
     printf("\b\b; ");
-    for (const auto& alg : name.second) {
+    for (const auto &alg : name.second) {
       printf("%.4f, ", alg.second.nees_pos.mean);
     }
     printf("\b\b};\n");
     printf("%s_nees_pos_std  = {", name.first.c_str());
-    for (const auto& alg : name.second) {
+    for (const auto &alg : name.second) {
       printf("'%s', ", replace_all_copy(alg.first, "_", "\\_").c_str());
     }
     printf("\b\b; ");
-    for (const auto& alg : name.second) {
+    for (const auto &alg : name.second) {
       printf("%.4f, ", alg.second.nees_pos.std);
     }
     printf("\b\b};\n");
     printf("%s_time_mean = {", name.first.c_str());
-    for (const auto& alg : name.second) {
+    for (const auto &alg : name.second) {
       printf("'%s', ", replace_all_copy(alg.first, "_", "\\_").c_str());
     }
     printf("\b\b; ");
-    for (const auto& alg : name.second) {
+    for (const auto &alg : name.second) {
       printf("%.4f, ", alg.second.time.mean);
     }
     printf("\b\b};\n");
     printf("%s_time_std  = {", name.first.c_str());
-    for (const auto& alg : name.second) {
+    for (const auto &alg : name.second) {
       printf("'%s', ", replace_all_copy(alg.first, "_", "\\_").c_str());
     }
     printf("\b\b; ");
-    for (const auto& alg : name.second) {
+    for (const auto &alg : name.second) {
       printf("%.4f, ", alg.second.time.std);
     }
     printf("\b\b};\n");
@@ -894,7 +909,6 @@ void print_markdown_ate_rmse_nees_time() {
   // Segment the ground truth
   for (int i = 0; i < (int)path_gts.size(); i++)
     vv_gt.at(i / max_col).push_back(path_gts.at(i));
-
 
   printf("\n\n\n");
   printf("============================================\n");
@@ -949,5 +963,3 @@ void print_markdown_ate_rmse_nees_time() {
     printf("</table>\n");
   }
 }
-
-

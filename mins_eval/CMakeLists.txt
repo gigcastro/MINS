@@ -5,7 +5,6 @@ project(mins_eval)
 
 # Include libraries
 find_package(Eigen3 REQUIRED)
-find_package(Boost REQUIRED COMPONENTS system filesystem thread date_time)
 
 set(CMAKE_SUPPRESS_DEVELOPER_WARNINGS 1 CACHE INTERNAL "No dev warnings")
 
@@ -24,9 +23,9 @@ if (Python_FOUND AND NOT DISABLE_MATPLOTLIB)
     list(APPEND thirdparty_libraries ${Python_LIBRARIES})
 endif ()
 
-# We need c++14 for ROS2, thus just require it for everybody
+# We need c++17 for std::filesystem
 # NOTE: To future self, hope this isn't an issue...
-set(CMAKE_CXX_STANDARD 14)
+set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
@@ -37,69 +36,21 @@ set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O3 -fsee -fomit-frame-pointer -fno-sign
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -g3 -Wall -Wuninitialized -Wmaybe-uninitialized")
 
 # Find ROS build system
-find_package(catkin REQUIRED COMPONENTS roscpp rospy geometry_msgs nav_msgs sensor_msgs ov_core ov_eval)
-find_package(PCL REQUIRED QUIET)
 
-# Describe ROS project
-catkin_package(
-        CATKIN_DEPENDS roscpp rospy geometry_msgs nav_msgs sensor_msgs ov_core ov_eval
-        INCLUDE_DIRS src/
-        LIBRARIES mins_eval_lib
-)
+# GCC older than 9.1 needs an explicit lib for std::filesystem (ROS Melodic ships GCC 7.5)
+if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 9.1)
+    list(APPEND thirdparty_libraries stdc++fs)
+endif ()
 
-# Include our header files
-include_directories(
-        src
-        ${EIGEN3_INCLUDE_DIR}
-        ${Boost_INCLUDE_DIRS}
-        ${PCL_INCLUDE_DIRS}
-        ${PYTHON_INCLUDE_DIRS}
-        ${catkin_INCLUDE_DIRS}
-)
-
-# Set link libraries used by all binaries
-list(APPEND thirdparty_libraries
-        ${Boost_LIBRARIES}
-        ${catkin_LIBRARIES}
-        )
-
-##################################################
-# Make the shared library
-##################################################
-
-add_library(mins_eval_lib SHARED
-        src/functions/ErrorPlot.cpp
-        src/functions/ResultTrajectory.cpp
-        )
-target_link_libraries(mins_eval_lib ${thirdparty_libraries})
-target_include_directories(mins_eval_lib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src/)
-install(TARGETS mins_eval_lib
-        ARCHIVE DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
-        LIBRARY DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
-        RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
-        )
-
-install(DIRECTORY src/
-        DESTINATION ${CATKIN_GLOBAL_INCLUDE_DESTINATION}
-        FILES_MATCHING PATTERN "*.h" PATTERN "*.hpp"
-)
-
-##################################################
-# Make binary files!
-##################################################
-
-add_executable(plot_consistency src/plot_consistency.cpp)
-target_link_libraries(plot_consistency mins_eval_lib ${thirdparty_libraries})
-install(TARGETS plot_consistency
-        ARCHIVE DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
-        LIBRARY DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
-        RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
-        )
-
-add_executable(run_comparison src/run_comparison.cpp)
-target_link_libraries(run_comparison mins_eval_lib ${thirdparty_libraries})
-install(TARGETS run_comparison
-        ARCHIVE DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
-        LIBRARY DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
-        RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
-        )
+find_package(catkin QUIET COMPONENTS roscpp)
+find_package(ament_cmake QUIET)
+if (catkin_FOUND)
+    message(STATUS "ROS *1* version found, building ROS1.cmake")
+    include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/ROS1.cmake)
+elseif (ament_cmake_FOUND)
+    message(STATUS "ROS *2* version found, building ROS2.cmake")
+    include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/ROS2.cmake)
+else ()
+    message(STATUS "No ROS versions found, building ROS1.cmake")
+    include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/ROS1.cmake)
+endif ()

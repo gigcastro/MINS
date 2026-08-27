@@ -29,7 +29,6 @@
 #define MINS_SIMULATOR_H
 
 #include <Eigen/Eigen>
-#include <boost/shared_ptr.hpp>
 #include <memory>
 #include <random>
 #include <unordered_map>
@@ -39,10 +38,7 @@ namespace ov_core {
 struct ImuData;
 }
 
-namespace pcl {
-class PointXYZ;
-template <class pointT> class PointCloud;
-} // namespace pcl
+#include "update/lidar/PointCloud.h"
 
 using namespace Eigen;
 namespace mins {
@@ -123,14 +119,18 @@ public:
    * @param lidar mins::LidarData
    * @return True if we have a measurement
    */
-  bool get_next_lidar(std::shared_ptr<pcl::PointCloud<pcl::PointXYZ>> lidar);
+  bool get_next_lidar(std::shared_ptr<mins::PointCloud<mins::PointXYZ>> lidar);
 
   /// boolean for transforming groundtruth after GPS initialization
   bool trans_gt_to_ENU = false;
 
+  /// Returns RMSE and NEES of IMU pose (ori rmse, pos rmse, ori nees, pos nees)
+  Vector4d imu_rmse_nees(double time, Matrix<double, 7, 1> imu, Matrix<double, 6, 6> cov);
+
 protected:
   friend class Initializer;
   friend class SimVisualizer;
+  friend class Sim2Visualizer;
   friend class State_Logger;
 
   /// Get LiDAR plane info
@@ -141,9 +141,6 @@ protected:
 
   /// Returns the true 3d map of camera features
   std::unordered_map<size_t, Vector3d> get_cam_map();
-
-  /// Returns RMSE and NEES of IMU pose (ori rmse, pos rmse, ori nees, pos nees)
-  Vector4d imu_rmse_nees(double time, Matrix<double, 7, 1> imu, Matrix<double, 6, 6> cov);
 
   /// a wrapper function of spline that returns IMU pose & velocities & accelerations
   bool get_imu_acceleration(double timestamp, Matrix3d &R_GtoI, Vector3d &p_IinG, Vector3d &w_IinI, Vector3d &v_IinG, Vector3d &alpha_IinI, Vector3d &a_IinG);
@@ -186,7 +183,7 @@ protected:
   bool load_plane_data(std::string path_planes);
 
   /// Generate LiDAR pointcloud
-  bool get_lidar_pointcloud(std::shared_ptr<pcl::PointCloud<pcl::PointXYZ>> lidar, double time, int id, std::shared_ptr<OptionsLidar> lidar_op);
+  bool get_lidar_pointcloud(std::shared_ptr<mins::PointCloud<mins::PointXYZ>> lidar, double time, int id, std::shared_ptr<OptionsLidar> lidar_op);
 
   /**
    * @brief Will generate points in the fov of the specified camera

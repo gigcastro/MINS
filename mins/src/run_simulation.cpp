@@ -27,7 +27,14 @@
 
 #include <memory>
 
+#if ROS_AVAILABLE == 2
+#include "core/ROS2Publisher.h"
+#include "sim/Sim2Visualizer.h"
+#include <rclcpp/rclcpp.hpp>
+#elif ROS_AVAILABLE == 1
 #include "core/ROSPublisher.h"
+#include "sim/SimVisualizer.h"
+#endif
 #include "core/SystemManager.h"
 #include "options/Options.h"
 #include "options/OptionsCamera.h"
@@ -37,7 +44,6 @@
 #include "options/OptionsSystem.h"
 #include "options/OptionsVicon.h"
 #include "options/OptionsWheel.h"
-#include "sim/SimVisualizer.h"
 #include "sim/Simulator.h"
 #include "update/cam/CamTypes.h"
 #include "update/gps/GPSTypes.h"
@@ -50,9 +56,7 @@
 #include "utils/colors.h"
 #include "utils/opencv_yaml_parse.h"
 #include "utils/sensor_data.h"
-#include <pcl/point_cloud.h>
-#include <pcl/point_types.h>
-#include <ros/ros.h>
+#include "update/lidar/PointCloud.h"
 
 using namespace mins;
 using namespace std;
@@ -60,8 +64,13 @@ using namespace Eigen;
 
 shared_ptr<Simulator> sim;
 shared_ptr<SystemManager> sys;
+#if ROS_AVAILABLE == 2
+shared_ptr<ROS2Publisher> pub;
+shared_ptr<Sim2Visualizer> sim_viz;
+#elif ROS_AVAILABLE == 1
 shared_ptr<ROSPublisher> pub;
 shared_ptr<SimVisualizer> sim_viz;
+#endif
 shared_ptr<Options> op;
 shared_ptr<State_Logger> save;
 
@@ -72,7 +81,11 @@ int main(int argc, char **argv) {
   // Load parameters
   system_setup(argc, argv);
   // run simulation
+#if ROS_AVAILABLE == 2
+  while (sim->ok() && rclcpp::ok()) {
+#else
   while (sim->ok() && ros::ok()) {
+#endif
     // imu: get the next simulated imu measurement if we have it
     ov_core::ImuData imu;
     if (sim->get_next_imu(imu)) {
@@ -108,7 +121,7 @@ int main(int argc, char **argv) {
     }
 
     // LIDAR: get the next simulated lidar range measurements
-    std::shared_ptr<pcl::PointCloud<pcl::PointXYZ>> lidar(new pcl::PointCloud<pcl::PointXYZ>);
+    std::shared_ptr<mins::PointCloud<mins::PointXYZ>> lidar(new mins::PointCloud<mins::PointXYZ>);
     if (sim->get_next_lidar(lidar)) {
       sys->feed_measurement_lidar(lidar);
       pub->publish_lidar_cloud(lidar);
@@ -129,7 +142,13 @@ int main(int argc, char **argv) {
   op->sys->save_timing ? save->save_timing_to_file(sys->tc_sensors->get_total_sum()) : void();
   save->check_files();
 
-  ros::shutdown();
+#if ROS_AVAILABLE == 2
+  // Release publishers (and the node they hold) while the context is still
+  // valid, otherwise their rcl handles are destroyed after shutdown -> segfault.
+  pub.reset();
+  sim_viz.reset();
+  rclcpp::shutdown();
+#endif
   return EXIT_SUCCESS;
 }
 
@@ -139,13 +158,27 @@ void system_setup(int argc, char **argv) {
   argc > 1 ? config_path = argv[1] : string();
 
   // Launch our ros node
+#if ROS_AVAILABLE == 2
+  rclcpp::init(argc, argv);
+
+  auto node = std::make_shared<rclcpp::Node>("mins_simulation");
+
+  // Declare so the value can be supplied either via launch parameter or argv[1].
+  node->declare_parameter<std::string>("config_path", config_path);
+  node->get_parameter<std::string>("config_path", config_path);
+#elif ROS_AVAILABLE == 1
   ros::init(argc, argv, "mins_simulation");
   auto nh = make_shared<ros::NodeHandle>("~");
   nh->param<string>("config_path", config_path, config_path);
-
+#endif
   // Load the config
   auto parser = make_shared<ov_core::YamlParser>(config_path);
+
+#if ROS_AVAILABLE == 2
+  parser->set_node(node);
+#elif ROS_AVAILABLE == 1
   parser->set_node_handler(nh);
+#endif
   op = make_shared<Options>();
   op->load_print(parser);
   op->sys->save_prints ? mins::Print_Logger::open_file(op->sys->path_state, true) : void();
@@ -153,8 +186,14 @@ void system_setup(int argc, char **argv) {
   // Create our system
   sim = make_shared<Simulator>(op);
   sys = make_shared<SystemManager>(op->est, sim);
+
+#if ROS_AVAILABLE == 2
+  pub = make_shared<ROS2Publisher>(node, sys, op);
+  sim_viz = make_shared<Sim2Visualizer>(node, sys, sim);
+#elif ROS_AVAILABLE == 1
   pub = make_shared<ROSPublisher>(nh, sys, op);
   sim_viz = make_shared<SimVisualizer>(nh, sys, sim);
+#endif
 
   // Ensure we read in all parameters required
   if (!parser->successful()) {

@@ -1,0 +1,26 @@
+name: ROS2 Humble (Ubuntu 22.04)
+
+on:
+  push:
+    branches: [ "master" ]
+  pull_request:
+    branches: [ "master" ]
+
+jobs:
+
+  build_humble:
+    name: "ROS2 Ubuntu 22.04"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the Docker image (Humble 22.04)
+        run: docker build . --file Dockerfile_humble_22_04 --tag mins:humble
+      - name: Smoke test - simulation runs end to end
+        run: |
+          docker run --rm --entrypoint /bin/bash mins:humble -c '
+            set -eo pipefail
+            source /opt/ros/humble/setup.bash && source /work/install/setup.bash
+            cfg=/work/install/mins/share/mins/config/simulation/config.yaml
+            timeout 600 ros2 run mins simulation "$cfg" 2>&1 | tee /tmp/sim.log
+            grep -q "RMSE average" /tmp/sim.log
+          '

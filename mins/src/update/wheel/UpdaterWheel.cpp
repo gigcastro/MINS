@@ -36,6 +36,15 @@ using namespace std;
 using namespace ov_type;
 using namespace ov_core;
 
+/// Angular rate below which the closed-form integration is replaced by its L'Hopital limit.
+static constexpr double SMALL_ANGULAR_RATE = 1e-4;
+
+/// Wheel measurements older than this many seconds are dropped from the stack.
+static constexpr double MEASUREMENT_HISTORY_SECONDS = 100;
+
+/// Maximum number of measurement timestamps kept for frequency bookkeeping.
+static constexpr size_t MAX_TIME_HISTORY = 100;
+
 UpdaterWheel::UpdaterWheel(StatePtr state) : state(state) { Chi = make_shared<UpdaterStatistics>(state->op->wheel->chi2_mult, "WHEEL"); }
 
 void UpdaterWheel::try_update() {
@@ -100,7 +109,7 @@ bool UpdaterWheel::update(double time0, double time1) {
   for (size_t i = 0; i < data_vec.size() - 1; i++) {
     double dt = data_vec[i + 1].time - data_vec[i].time;
     // Perform 3D integration
-    if (state->op->wheel->type == "Wheel3DAng" || state->op->wheel->type == "Wheel3DLin" || state->op->wheel->type == "Wheel3DCen") {
+    if (IsWheel3D(state->op->wheel->type)) {
       if (state->op->wheel->do_calib_int)
         preintegration_intrinsics_3D(dt, data_vec[i]);
       preintegration_3D(dt, data_vec[i], data_vec[i + 1]);
@@ -116,7 +125,7 @@ bool UpdaterWheel::update(double time0, double time1) {
   MatrixXd H;
   VectorXd res;
   vector<shared_ptr<ov_type::Type>> x_order;
-  if (state->op->wheel->type == "Wheel3DAng" || state->op->wheel->type == "Wheel3DLin" || state->op->wheel->type == "Wheel3DCen")
+  if (IsWheel3D(state->op->wheel->type))
     compute_linear_system_3D(H, res, time0, time1);
   else
     compute_linear_system_2D(H, res, time0, time1);
@@ -132,7 +141,7 @@ bool UpdaterWheel::update(double time0, double time1) {
     x_order.push_back(state->wheel_intrinsic);
 
   // Perform update
-  if (state->op->wheel->type == "Wheel3DAng" || state->op->wheel->type == "Wheel3DLin" || state->op->wheel->type == "Wheel3DCen") {
+  if (IsWheel3D(state->op->wheel->type)) {
     if (Chi->Chi2Check(state, x_order, H, res, Cov_3D))
       StateHelper::EKFUpdate(state, x_order, H, res, Cov_3D, "WHEEL");
   } else {
@@ -142,6 +151,26 @@ bool UpdaterWheel::update(double time0, double time1) {
 
   // record last updated time and return success
   last_updated_clone_time = time1;
+  return true;
+}
+
+int UpdaterWheel::cleanup_measurements(double oldest_time) {
+  int count = 0;
+  for (auto data = data_stack.begin(); data != data_stack.end() && data->time < oldest_time;) {
+    count++;
+    data = data_stack.erase(data);
+  }
+  return count;
+}
+
+size_t UpdaterWheel::num_measurements() const { return data_stack.size(); }
+
+bool UpdaterWheel::measurement_time_span(double &min_time, double &max_time) const {
+  if (data_stack.size() < 3) {
+    return false;
+  }
+  min_time = data_stack.at(1).time;
+  max_time = data_stack.at(data_stack.size() - 2).time;
   return true;
 }
 
@@ -225,222 +254,195 @@ bool UpdaterWheel::select_wheel_data(double time0, double time1, vector<WheelDat
  * Given a measurement, this will compute the linear system of the new measurements in respect to the state
  * This will return a "small" H, res, and R which are only of a single measurement and sub-set of the state
  */
-void UpdaterWheel::compute_linear_system_2D(MatrixXd &H, VectorXd &res, double time0, double time1) {
-
-  // Load state values
-  shared_ptr<PoseJPL> pose0 = state->clones.at(time0);
-  shared_ptr<PoseJPL> pose1 = state->clones.at(time1);
-  Vector3d pI0inG = pose0->pos();
-  Vector3d pI1inG = pose1->pos();
-  Matrix3d RGtoI0 = pose0->Rot();
-  Matrix3d RGtoI1 = pose1->Rot();
-  Vector3d pIinO = state->wheel_extrinsic->pos();
-  Matrix3d RItoO = state->wheel_extrinsic->Rot();
-  Vector3d pOinI = -RItoO.transpose() * pIinO;
-  Matrix3d RO0toO1 = RItoO * RGtoI1 * RGtoI0.transpose() * RItoO.transpose();
-  Matrix3d RO1toO0 = RO0toO1.transpose();
-
-  // Create projection matrix
+Eigen::Vector3d UpdaterWheel::ComputeResidual2D(const Matrix3d &R_GtoI0, const Vector3d &p_I0inG,
+                                                 const Matrix3d &R_GtoI1, const Vector3d &p_I1inG,
+                                                 const Matrix3d &R_ItoO, const Vector3d &p_IinO,
+                                                 double th, double x, double y) {
+  Vector3d pOinI = -R_ItoO.transpose() * p_IinO;
   Vector3d e3(0, 0, 1);
   Matrix<double, 2, 3> Lambda = Matrix<double, 2, 3>::Zero();
   Lambda.block(0, 0, 2, 2) = Matrix2d::Identity();
 
-  // Compute Orientation and position measurement residual
-  res = Vector3d::Zero();
-  double theta_est = e3.transpose() * log_so3(RItoO * RGtoI1 * RGtoI0.transpose() * RItoO.transpose());
-  res(0, 0) = theta_est - th_2D;
-  Vector2d d_int(x_2D, y_2D);
-  Vector2d d_est = Lambda * RItoO * RGtoI0 * (pI1inG + RGtoI1.transpose() * pOinI - pI0inG - RGtoI0.transpose() * pOinI);
-  res.block(1, 0, 2, 1) = d_int - d_est;
+  Vector3d res = Vector3d::Zero();
+  double theta_est = e3.transpose() * log_so3(R_ItoO * R_GtoI1 * R_GtoI0.transpose() * R_ItoO.transpose());
+  res(0) = theta_est - th;
+  Vector2d d_est = Lambda * R_ItoO * R_GtoI0 * (p_I1inG + R_GtoI1.transpose() * pOinI - p_I0inG - R_GtoI0.transpose() * pOinI);
+  res.block(1, 0, 2, 1) = Vector2d(x, y) - d_est;
+  return res;
+}
 
-  // Now compute Jacobians!
+pair<MatrixXd, MatrixXd> UpdaterWheel::ComputeJacobians2D(const Matrix3d &R_GtoI0, const Vector3d &p_I0inG,
+                                                            const Matrix3d &R_GtoI1, const Vector3d &p_I1inG,
+                                                            const Matrix3d &R_ItoO, const Vector3d &p_IinO) {
+  Vector3d pOinI = -R_ItoO.transpose() * p_IinO;
+  Matrix3d RO0toO1 = R_ItoO * R_GtoI1 * R_GtoI0.transpose() * R_ItoO.transpose();
+  Matrix3d RO1toO0 = RO0toO1.transpose();
+  Vector3d phi = log_so3(RO0toO1);
+  Vector3d e3(0, 0, 1);
+  Matrix<double, 2, 3> Lambda = Matrix<double, 2, 3>::Zero();
+  Lambda.block(0, 0, 2, 2) = Matrix2d::Identity();
 
-  // compute the size of the Jacobian
-  int H_size = 12; // Default size for pose of clone 1 and 2
+  // d log_so3(R * exp(dth)) / d(dth) = Jr(dth)^-1, corrects for SO(3) curvature.
+  Matrix3d Jr_phi_inv = Jr_so3(phi).inverse();
+  Matrix<double, 1, 3> dzr_dth0 = -e3.transpose() * Jr_phi_inv * R_ItoO;
+  Matrix<double, 1, 3> dzr_dth1 = e3.transpose() * Jr_phi_inv * RO1toO0 * R_ItoO;
+  Matrix<double, 2, 3> dzp_dth0 = Lambda * R_ItoO * skew_x(R_GtoI0 * (p_I1inG + R_GtoI1.transpose() * pOinI - p_I0inG));
+  Matrix<double, 2, 3> dzp_dp0 = -Lambda * R_ItoO * R_GtoI0;
+  Matrix<double, 2, 3> dzp_dth1 = -Lambda * R_ItoO * R_GtoI0 * R_GtoI1.transpose() * skew_x(pOinI);
+  Matrix<double, 2, 3> dzp_dp1 = Lambda * R_ItoO * R_GtoI0;
+
+  MatrixXd H_poses = MatrixXd::Zero(3, 12);
+  H_poses.block(0, 0, 1, 3) = dzr_dth0;
+  H_poses.block(0, 6, 1, 3) = dzr_dth1;
+  H_poses.block(1, 0, 2, 3) = dzp_dth0;
+  H_poses.block(1, 3, 2, 3) = dzp_dp0;
+  H_poses.block(1, 6, 2, 3) = dzp_dth1;
+  H_poses.block(1, 9, 2, 3) = dzp_dp1;
+
+  Matrix<double, 1, 3> dzr_dthcalib = e3.transpose() * Jr_phi_inv * (RO1toO0 - Matrix3d::Identity());
+  Matrix<double, 2, 3> dzp_dthcalib = Lambda * (skew_x(R_ItoO * R_GtoI0 * (p_I1inG - p_I0inG) - RO1toO0 * p_IinO) + RO1toO0 * skew_x(p_IinO));
+  Matrix<double, 2, 3> dzp_dpcalib = Lambda * (-RO1toO0 + Matrix3d::Identity());
+
+  MatrixXd H_ext = MatrixXd::Zero(3, 6);
+  H_ext.block(0, 0, 1, 3) = dzr_dthcalib;
+  H_ext.block(1, 0, 2, 3) = dzp_dthcalib;
+  H_ext.block(1, 3, 2, 3) = dzp_dpcalib;
+
+  return {H_poses, H_ext};
+}
+
+void UpdaterWheel::compute_linear_system_2D(MatrixXd &H, VectorXd &res, double time0, double time1) {
+  shared_ptr<PoseJPL> pose0 = state->clones.at(time0);
+  shared_ptr<PoseJPL> pose1 = state->clones.at(time1);
+  Matrix3d RItoO = state->wheel_extrinsic->Rot();
+  Vector3d pIinO = state->wheel_extrinsic->pos();
+
+  // Residual at current state values
+  res = ComputeResidual2D(pose0->Rot(), pose0->pos(), pose1->Rot(), pose1->pos(), RItoO, pIinO, th_2D, x_2D, y_2D);
+
+  // Jacobians at FEJ state values
+  int H_size = 12;
   int H_count = 12;
   H_size += (state->op->wheel->do_calib_ext) ? 6 : 0;
   H_size += (state->op->wheel->do_calib_dt) ? 1 : 0;
   H_size += (state->op->wheel->do_calib_int) ? 3 : 0;
   H = MatrixXd::Zero(3, H_size);
 
-  // Overwrite FEJ
-  pI0inG = pose0->pos_fej();
-  pI1inG = pose1->pos_fej();
-  RGtoI0 = pose0->Rot_fej();
-  RGtoI1 = pose1->Rot_fej();
-  RO0toO1 = RItoO * RGtoI1 * RGtoI0.transpose() * RItoO.transpose();
-  RO1toO0 = RO0toO1.transpose();
+  const auto [H_poses, H_ext] = ComputeJacobians2D(pose0->Rot_fej(), pose0->pos_fej(), pose1->Rot_fej(), pose1->pos_fej(), RItoO, pIinO);
+  H.block(0, 0, 3, 12) = H_poses;
 
-  // Jacobians in respect to current state
-  // orientation
-  Matrix<double, 1, 3> dzr_dth0 = -e3.transpose() * RItoO * RGtoI1 * RGtoI0.transpose();
-  Matrix<double, 1, 3> dzr_dth1 = e3.transpose() * RItoO;
-  // position
-  Matrix<double, 2, 3> dzp_dth0 = Lambda * RItoO * skew_x(RGtoI0 * (pI1inG + RGtoI1.transpose() * pOinI - pI0inG));
-  Matrix<double, 2, 3> dzp_dp0 = -Lambda * RItoO * RGtoI0;
-  Matrix<double, 2, 3> dzp_dth1 = -Lambda * RItoO * RGtoI0 * RGtoI1.transpose() * skew_x(pOinI);
-  Matrix<double, 2, 3> dzp_dp1 = Lambda * RItoO * RGtoI0;
-
-  // Derivative orientation change wrt oldest pose0 and pose1
-  H.block(0, 0, 1, 3) = dzr_dth0;
-  H.block(0, 6, 1, 3) = dzr_dth1;
-  // Derivative position change wrt oldest pose0 and pose1
-  H.block(1, 0, 2, 3) = dzp_dth0;
-  H.block(1, 3, 2, 3) = dzp_dp0;
-  H.block(1, 6, 2, 3) = dzp_dth1;
-  H.block(1, 9, 2, 3) = dzp_dp1;
-
-  // Jacobian wrt wheel to IMU extrinsics
   if (state->op->wheel->do_calib_ext) {
-    Matrix<double, 1, 3> dzr_dthcalib = e3.transpose() * (Matrix3d::Identity() - RO0toO1);
-    Matrix<double, 2, 3> dzp_dthcalib = Lambda * (skew_x(RItoO * RGtoI0 * (pI1inG - pI0inG) - RO1toO0 * pIinO) + RO1toO0 * skew_x(pIinO));
-    Matrix<double, 2, 3> dzp_dpcalib = Lambda * (-RO1toO0 + Matrix3d::Identity());
-    H.block(0, H_count, 1, 3) = dzr_dthcalib;
-    H.block(1, H_count, 2, 3) = dzp_dthcalib;
-    H.block(1, H_count + 3, 2, 3) = dzp_dpcalib;
+    H.block(0, H_count, 3, 6) = H_ext;
     H_count += 6;
   }
 
-  // Jacobian wrt wheel timeoffset.
   if (state->op->wheel->do_calib_dt) {
-    // should be able to find imu wv
     assert(state->cpis.find(time0) != state->cpis.end());
     assert(state->cpis.find(time1) != state->cpis.end());
-    Vector3d w0 = state->cpis.at(time0).w;
-    Vector3d v0 = state->cpis.at(time0).v;
-    Vector3d w1 = state->cpis.at(time1).w;
-    Vector3d v1 = state->cpis.at(time1).v;
-
-    // Put it in the Jacobian matrix
-    H(0, H_count) = (dzr_dth0 * w0 + dzr_dth1 * w1)(0, 0);
-    H.block(1, H_count, 2, 1) = (dzp_dth0 * w0 + dzp_dp0 * v0 + dzp_dth1 * w1 + dzp_dp1 * v1);
+    H.col(H_count) = ComputeTimeOffsetJacobian2D(H_poses, state->cpis.at(time0).w, state->cpis.at(time0).v,
+                                                  state->cpis.at(time1).w, state->cpis.at(time1).v);
     H_count += 1;
   }
 
-  // Jacobian wrt wheel intrinsics.
   if (state->op->wheel->do_calib_int) {
-    // Note they are the opposite sign
     H.block(0, H_count, 1, 3) = -dth_di_2D;
     H.block(1, H_count, 1, 3) = -dx_di_2D;
     H.block(2, H_count, 1, 3) = -dy_di_2D;
   }
 }
 
-/**
- * Given a measurement, this will compute the linear system of the new measurements in respect to the state
- * This will return a "small" H, res, and R which are only of a single measurement and sub-set of the state
- */
-void UpdaterWheel::compute_linear_system_3D(MatrixXd &H, VectorXd &res, double time0, double time1) {
-
-  // Load state values
-  shared_ptr<PoseJPL> pose0 = state->clones.at(time0);
-  shared_ptr<PoseJPL> pose1 = state->clones.at(time1);
-  Vector3d pI0inG = pose0->pos();
-  Vector3d pI1inG = pose1->pos();
-  Matrix3d RGtoI0 = pose0->Rot();
-  Matrix3d RGtoI1 = pose1->Rot();
-  Vector3d pIinO = state->wheel_extrinsic->pos();
-  Matrix3d RItoO = state->wheel_extrinsic->Rot();
-  Vector3d pOinI = -RItoO.transpose() * pIinO;
-  Matrix3d RO0toO1 = RItoO * RGtoI1 * RGtoI0.transpose() * RItoO.transpose();
-  Matrix3d RO1toO0 = RO0toO1.transpose();
-
-  // Compute Orientation and position measurement residual
-  res = Matrix<double, 6, 1>::Zero();
-  // orientation
-  Matrix3d R_est = RO0toO1;
-  res.block(0, 0, 3, 1) = -log_so3(R_3D * R_est.transpose());
-  // position
-  Vector3d p_est = RItoO * RGtoI0 * (pI1inG + RGtoI1.transpose() * pOinI - pI0inG - RGtoI0.transpose() * pOinI);
-  res.block(3, 0, 3, 1) = p_3D - p_est;
-
-  // Now compute Jacobians!
-
-  // compute the size of the Jacobian
-  int H_size = 12; // Default size for pose of clone 1 and 2
-  int H_count = 12;
-  H_size += (state->op->wheel->do_calib_ext) ? 6 : 0;
-  H_size += (state->op->wheel->do_calib_dt) ? 1 : 0;
-  H_size += (state->op->wheel->do_calib_int) ? 3 : 0;
-  H = MatrixXd::Zero(6, H_size);
-
-  // Overwrite FEJ
-  pI0inG = pose0->pos_fej();
-  pI1inG = pose1->pos_fej();
-  RGtoI0 = pose0->Rot_fej();
-  RGtoI1 = pose1->Rot_fej();
-  RO0toO1 = RItoO * RGtoI1 * RGtoI0.transpose() * RItoO.transpose();
-  RO1toO0 = RO0toO1.transpose();
-
-  // Jacobians in respect to current state
-  // orientation
-  Matrix3d dzr_dth0 = -RItoO * RGtoI1 * RGtoI0.transpose();
-  Matrix3d dzr_dth1 = RItoO;
-  // position
-  Matrix3d dzp_dth0 = RItoO * skew_x(RGtoI0 * pI1inG + RGtoI0 * RGtoI1.transpose() * pOinI - RGtoI0 * pI0inG);
-  Matrix3d dzp_dp0 = -RItoO * RGtoI0;
-  Matrix3d dzp_dth1 = -RItoO * RGtoI0 * RGtoI1.transpose() * skew_x(pOinI);
-  Matrix3d dzp_dp1 = RItoO * RGtoI0;
-
-  // Derivative theta change wrt oldest pose0 and pose1
-  H.block(0, 0, 3, 3) = dzr_dth0;
-  H.block(0, 6, 3, 3) = dzr_dth1;
-  // Derivative position change wrt oldest pose0 and pose1
-  H.block(3, 0, 3, 3) = dzp_dth0;
-  H.block(3, 3, 3, 3) = dzp_dp0;
-  H.block(3, 6, 3, 3) = dzp_dth1;
-  H.block(3, 9, 3, 3) = dzp_dp1;
-
-  // Jacobian wrt wheel to IMU extrinsics
-  if (state->op->wheel->do_calib_ext) {
-    Matrix3d dzr_dthcalib = (Matrix3d::Identity() - RO0toO1);
-    Matrix3d dzp_dpcalib = -RO1toO0 + Matrix3d::Identity();
-    Matrix3d dzp_dthcalib = skew_x(RItoO * RGtoI0 * (pI1inG - pI0inG) - RO1toO0 * pIinO) + RO1toO0 * skew_x(pIinO);
-    H.block(0, H_count, 3, 3) = dzr_dthcalib;
-    H.block(3, H_count, 3, 3) = dzp_dthcalib;
-    H.block(3, H_count + 3, 3, 3) = dzp_dpcalib;
-    H_count += 6;
-  }
-
-  // Jacobian wrt wheel timeoffset.
-  if (state->op->wheel->do_calib_dt) {
-    // should be able to find imu wv
-    assert(state->cpis.find(time0) != state->cpis.end());
-    assert(state->cpis.find(time1) != state->cpis.end());
-    Vector3d w0 = state->cpis.at(time0).w;
-    Vector3d v0 = state->cpis.at(time0).v;
-    Vector3d w1 = state->cpis.at(time1).w;
-    Vector3d v1 = state->cpis.at(time1).v;
-
-    // Put it in the Jacobian matrix
-    H.block(0, H_count, 3, 1) = dzr_dth0 * w0 + dzr_dth1 * w1;
-    H.block(3, H_count, 3, 1) = dzp_dth0 * w0 + dzp_dp0 * v0 + dzp_dth1 * w1 + dzp_dp1 * v1;
-    H_count += 1;
-  }
-
-  // Jacobian wrt wheel intrinsics.
-  if (state->op->wheel->do_calib_int) {
-    // Note they are the opposite sign
-    H.block(0, H_count, 3, 3) = -dR_di_3D;
-    H.block(3, H_count, 3, 3) = -dp_di_3D;
-  }
+Matrix<double, 6, 1> UpdaterWheel::ComputeResidual3D(const Matrix3d &R_GtoI0, const Vector3d &p_I0inG,
+                                                       const Matrix3d &R_GtoI1, const Vector3d &p_I1inG,
+                                                       const Matrix3d &R_ItoO, const Vector3d &p_IinO,
+                                                       const Matrix3d &R_3D, const Vector3d &p_3D) {
+  Vector3d pOinI = -R_ItoO.transpose() * p_IinO;
+  Matrix3d RO0toO1 = R_ItoO * R_GtoI1 * R_GtoI0.transpose() * R_ItoO.transpose();
+  Matrix<double, 6, 1> res = Matrix<double, 6, 1>::Zero();
+  res.head(3) = -log_so3(R_3D * RO0toO1.transpose());
+  res.tail(3) = p_3D - R_ItoO * R_GtoI0 * (p_I1inG + R_GtoI1.transpose() * pOinI - p_I0inG - R_GtoI0.transpose() * pOinI);
+  return res;
 }
 
-void UpdaterWheel::preintegration_intrinsics_2D(double dt, WheelData data) {
-  // load measurement
-  double w_l = data.m1;
-  double w_r = data.m2;
+pair<MatrixXd, MatrixXd> UpdaterWheel::ComputeJacobians3D(const Matrix3d &R_GtoI0, const Vector3d &p_I0inG,
+                                                            const Matrix3d &R_GtoI1, const Vector3d &p_I1inG,
+                                                            const Matrix3d &R_ItoO, const Vector3d &p_IinO) {
+  Vector3d pOinI = -R_ItoO.transpose() * p_IinO;
+  Matrix3d RO0toO1 = R_ItoO * R_GtoI1 * R_GtoI0.transpose() * R_ItoO.transpose();
+  Matrix3d RO1toO0 = RO0toO1.transpose();
 
-  // load intrinsic values
-  double rl = state->wheel_intrinsic->value()(0);
-  double rr = state->wheel_intrinsic->value()(1);
-  double b = state->wheel_intrinsic->value()(2);
+  Matrix3d dzr_dth0 = -R_ItoO * R_GtoI1 * R_GtoI0.transpose();
+  Matrix3d dzr_dth1 = R_ItoO;
+  Matrix3d dzp_dth0 = R_ItoO * skew_x(R_GtoI0 * (p_I1inG + R_GtoI1.transpose() * pOinI - p_I0inG));
+  Matrix3d dzp_dp0 = -R_ItoO * R_GtoI0;
+  Matrix3d dzp_dth1 = -R_ItoO * R_GtoI0 * R_GtoI1.transpose() * skew_x(pOinI);
+  Matrix3d dzp_dp1 = R_ItoO * R_GtoI0;
 
-  // compute the velocities of the wheel odometry frame
+  MatrixXd H_poses = MatrixXd::Zero(6, 12);
+  H_poses.block(0, 0, 3, 3) = dzr_dth0;
+  H_poses.block(0, 6, 3, 3) = dzr_dth1;
+  H_poses.block(3, 0, 3, 3) = dzp_dth0;
+  H_poses.block(3, 3, 3, 3) = dzp_dp0;
+  H_poses.block(3, 6, 3, 3) = dzp_dth1;
+  H_poses.block(3, 9, 3, 3) = dzp_dp1;
+
+  Matrix3d dzr_dthcalib = Matrix3d::Identity() - RO0toO1;
+  Matrix3d dzp_dthcalib = skew_x(R_ItoO * R_GtoI0 * (p_I1inG - p_I0inG) - RO1toO0 * p_IinO) + RO1toO0 * skew_x(p_IinO);
+  Matrix3d dzp_dpcalib = -RO1toO0 + Matrix3d::Identity();
+
+  MatrixXd H_ext = MatrixXd::Zero(6, 6);
+  H_ext.block(0, 0, 3, 3) = dzr_dthcalib;
+  H_ext.block(3, 0, 3, 3) = dzp_dthcalib;
+  H_ext.block(3, 3, 3, 3) = dzp_dpcalib;
+
+  return {H_poses, H_ext};
+}
+
+Vector3d UpdaterWheel::ComputeTimeOffsetJacobian2D(const MatrixXd &H_poses,
+                                                    const Vector3d &w0, const Vector3d &v0,
+                                                    const Vector3d &w1, const Vector3d &v1) {
+  Matrix<double, 12, 1> vel;
+  vel << w0, v0, w1, v1;
+  return H_poses * vel;
+}
+
+Matrix<double, 6, 1> UpdaterWheel::ComputeTimeOffsetJacobian3D(const MatrixXd &H_poses,
+                                                                 const Vector3d &w0, const Vector3d &v0,
+                                                                 const Vector3d &w1, const Vector3d &v1) {
+  Matrix<double, 12, 1> vel;
+  vel << w0, v0, w1, v1;
+  return H_poses * vel;
+}
+
+PreintegrationPartials2D UpdaterWheel::ComputePreintegrationPartials2D(double dt, double w, double v,
+                                                                      double th) {
+  PreintegrationPartials2D partials;
+  partials.h_thw = dt;
+  if (abs(w) < SMALL_ANGULAR_RATE) {
+    partials.h_xth = v * sin(th) * dt;
+    partials.h_yth = v * cos(th) * dt;
+    partials.h_xw = v * sin(th) * dt * dt / 2;
+    partials.h_yw = v * cos(th) * dt * dt / 2;
+    partials.h_xv = cos(th) * dt;
+    partials.h_yv = -sin(th) * dt;
+    return partials;
+  }
+  partials.h_xth = (v * (cos(th - w * dt) - cos(th))) / w;
+  partials.h_yth = -(v * (sin(th - w * dt) - sin(th))) / w;
+  partials.h_xw = (v * (sin(th - w * dt) - sin(th))) / w / w + (v * cos(th - w * dt) * dt) / w;
+  partials.h_yw = (v * (cos(th - w * dt) - cos(th))) / w / w - (v * sin(th - w * dt) * dt) / w;
+  partials.h_xv = -(sin(th - w * dt) - sin(th)) / w;
+  partials.h_yv = -(cos(th - w * dt) - cos(th)) / w;
+  return partials;
+}
+
+void UpdaterWheel::AccumulateIntrinsicJacobians2D(double dt, double w_l, double w_r, double th,
+                                                   double rl, double rr, double b,
+                                                   Matrix<double, 1, 3> &dth_di,
+                                                   Matrix<double, 1, 3> &dx_di,
+                                                   Matrix<double, 1, 3> &dy_di) {
   double w = (w_r * rr - w_l * rl) / b;
   double v = (w_r * rr + w_l * rl) / 2;
 
-  // Compute Jacobians of w and v respect to intrinsics
   Matrix<double, 1, 3> Hwx = Matrix<double, 1, 3>::Zero();
   Hwx(0, 0) = -w_l / b;
   Hwx(0, 1) = w_r / b;
@@ -449,46 +451,20 @@ void UpdaterWheel::preintegration_intrinsics_2D(double dt, WheelData data) {
   Hvx(0, 0) = w_l / 2;
   Hvx(0, 1) = w_r / 2;
 
-  // Compute Jacobians of integtrated measurement of this step
-  double h_thw = dt;
-  double h_xth = (v * (cos(th_2D - w * dt) - cos(th_2D))) / w;
-  double h_yth = -(v * (sin(th_2D - w * dt) - sin(th_2D))) / w;
-  double h_xw = (v * (sin(th_2D - w * dt) - sin(th_2D))) / w / w + (v * cos(th_2D - w * dt) * dt) / w;
-  double h_yw = (v * (cos(th_2D - w * dt) - cos(th_2D))) / w / w - (v * sin(th_2D - w * dt) * dt) / w;
-  double h_xv = -(sin(th_2D - w * dt) - sin(th_2D)) / w;
-  double h_yv = -(cos(th_2D - w * dt) - cos(th_2D)) / w;
+  const PreintegrationPartials2D partials = ComputePreintegrationPartials2D(dt, w, v, th);
 
-  // In case w is too small, apply L'Hopital rule
-  if (abs(w) < 0.0001) {
-    h_xth = v * sin(th_2D) * dt;
-    h_yth = v * cos(th_2D) * dt;
-    h_xw = v * sin(th_2D) * dt * dt / 2;
-    h_yw = v * cos(th_2D) * dt * dt / 2;
-    h_xv = cos(th_2D) * dt;
-    h_yv = -sin(th_2D) * dt;
-  }
-
-  // integrate the intrinsic Jacobians
-  dx_di_2D = dx_di_2D + h_xth * dth_di_2D + h_xw * Hwx + h_xv * Hvx;
-  dy_di_2D = dy_di_2D + h_yth * dth_di_2D + h_yw * Hwx + h_yv * Hvx;
-  dth_di_2D = dth_di_2D + h_thw * Hwx;
+  dx_di = dx_di + partials.h_xth * dth_di + partials.h_xw * Hwx + partials.h_xv * Hvx;
+  dy_di = dy_di + partials.h_yth * dth_di + partials.h_yw * Hwx + partials.h_yv * Hvx;
+  dth_di = dth_di + partials.h_thw * Hwx;
 }
 
-void UpdaterWheel::preintegration_intrinsics_3D(double dt, WheelData data) {
-  // load measurement
-  double w_l = data.m1;
-  double w_r = data.m2;
-
-  // load intrinsic values
-  double rl = state->wheel_intrinsic->value()(0);
-  double rr = state->wheel_intrinsic->value()(1);
-  double b = state->wheel_intrinsic->value()(2);
-
-  // compute the velocities of the wheel odometry frame
+void UpdaterWheel::AccumulateIntrinsicJacobians3D(double dt, double w_l, double w_r,
+                                                   const Matrix3d &R_3D,
+                                                   double rl, double rr, double b,
+                                                   Matrix3d &dR_di, Matrix3d &dp_di) {
   Vector3d w(0, 0, (w_r * rr - w_l * rl) / b);
   Vector3d v((w_r * rr + w_l * rl) / 2, 0, 0);
 
-  // Compute Jacobians of w and v respect to intrinsics
   Matrix3d Hwx = Matrix3d::Zero();
   Hwx(2, 0) = -w_l / b;
   Hwx(2, 1) = w_r / b;
@@ -497,16 +473,61 @@ void UpdaterWheel::preintegration_intrinsics_3D(double dt, WheelData data) {
   Hvx(0, 0) = w_l / 2;
   Hvx(0, 1) = w_r / 2;
 
-  // Compute Jacobians of integtrated measurement of this step
-  Matrix3d R = exp_so3(-w * dt);
+  Matrix3d R_step = exp_so3(-w * dt);
   Matrix3d Hth = Jl_so3(-w * dt) * dt;
 
-  // integrate the intrinsic Jacobians
-  dp_di_3D = dp_di_3D - R_3D.transpose() * skew_x(v * dt) * dR_di_3D + R_3D.transpose() * Hvx * dt;
-  dR_di_3D = R * dR_di_3D + Hth * Hwx;
+  dp_di = dp_di - R_3D.transpose() * skew_x(v * dt) * dR_di + R_3D.transpose() * Hvx * dt;
+  dR_di = R_step * dR_di + Hth * Hwx;
 }
 
-void UpdaterWheel::preintegration_2D(double dt, WheelData data1, WheelData data2) {
+void UpdaterWheel::compute_linear_system_3D(MatrixXd &H, VectorXd &res, double time0, double time1) {
+  shared_ptr<PoseJPL> pose0 = state->clones.at(time0);
+  shared_ptr<PoseJPL> pose1 = state->clones.at(time1);
+  Matrix3d RItoO = state->wheel_extrinsic->Rot();
+  Vector3d pIinO = state->wheel_extrinsic->pos();
+  // Residual at current state values
+  res = ComputeResidual3D(pose0->Rot(), pose0->pos(), pose1->Rot(), pose1->pos(), RItoO, pIinO, R_3D, p_3D);
+  // Jacobians at FEJ state values
+  int H_size = 12;
+  int H_count = 12;
+  H_size += (state->op->wheel->do_calib_ext) ? 6 : 0;
+  H_size += (state->op->wheel->do_calib_dt) ? 1 : 0;
+  H_size += (state->op->wheel->do_calib_int) ? 3 : 0;
+  H = MatrixXd::Zero(6, H_size);
+  const auto [H_poses, H_ext] = ComputeJacobians3D(pose0->Rot_fej(), pose0->pos_fej(), pose1->Rot_fej(), pose1->pos_fej(), RItoO, pIinO);
+  H.block(0, 0, 6, 12) = H_poses;
+  if (state->op->wheel->do_calib_ext) {
+    H.block(0, H_count, 6, 6) = H_ext;
+    H_count += 6;
+  }
+  if (state->op->wheel->do_calib_dt) {
+    assert(state->cpis.find(time0) != state->cpis.end());
+    assert(state->cpis.find(time1) != state->cpis.end());
+    H.col(H_count) = ComputeTimeOffsetJacobian3D(H_poses, state->cpis.at(time0).w, state->cpis.at(time0).v,
+                                                  state->cpis.at(time1).w, state->cpis.at(time1).v);
+    H_count += 1;
+  }
+  if (state->op->wheel->do_calib_int) {
+    H.block(0, H_count, 3, 3) = -dR_di_3D;
+    H.block(3, H_count, 3, 3) = -dp_di_3D;
+  }
+}
+
+void UpdaterWheel::preintegration_intrinsics_2D(double dt, const WheelData &data) {
+  double rl = state->wheel_intrinsic->value()(0);
+  double rr = state->wheel_intrinsic->value()(1);
+  double b = state->wheel_intrinsic->value()(2);
+  AccumulateIntrinsicJacobians2D(dt, data.m1, data.m2, th_2D, rl, rr, b, dth_di_2D, dx_di_2D, dy_di_2D);
+}
+
+void UpdaterWheel::preintegration_intrinsics_3D(double dt, const WheelData &data) {
+  double rl = state->wheel_intrinsic->value()(0);
+  double rr = state->wheel_intrinsic->value()(1);
+  double b = state->wheel_intrinsic->value()(2);
+  AccumulateIntrinsicJacobians3D(dt, data.m1, data.m2, R_3D, rl, rr, b, dR_di_3D, dp_di_3D);
+}
+
+void UpdaterWheel::preintegration_2D(double dt, const WheelData &data1, const WheelData &data2) {
 
   // load intrinsic values
   double rl = state->wheel_intrinsic->value()(0);
@@ -514,25 +535,26 @@ void UpdaterWheel::preintegration_2D(double dt, WheelData data1, WheelData data2
   double b = state->wheel_intrinsic->value()(2);
 
   // compute the velocities at the odometry frame
-  double w1, w2, v1, v2;
-  if (state->op->wheel->type == "Wheel2DAng") {
+  double w1 = 0, w2 = 0, v1 = 0, v2 = 0;
+  switch (ModalityOf(state->op->wheel->type)) {
+  case WheelModality::Angular:
     w1 = (data1.m2 * rr - data1.m1 * rl) / b;
     v1 = (data1.m2 * rr + data1.m1 * rl) / 2;
     w2 = (data2.m2 * rr - data2.m1 * rl) / b;
     v2 = (data2.m2 * rr + data2.m1 * rl) / 2;
-  } else if (state->op->wheel->type == "Wheel2DLin") {
+    break;
+  case WheelModality::Linear:
     w1 = (data1.m2 - data1.m1) / b;
     v1 = (data1.m2 + data1.m1) / 2;
     w2 = (data2.m2 - data2.m1) / b;
     v2 = (data2.m2 + data2.m1) / 2;
-  } else if (state->op->wheel->type == "Wheel2DCen") {
+    break;
+  case WheelModality::Centered:
     w1 = data1.m1;
     v1 = data1.m2;
     w2 = data2.m1;
     v2 = data2.m2;
-  } else {
-    PRINT4("Wrong wheel type selected!");
-    exit(EXIT_FAILURE);
+    break;
   }
 
   // =========================================================
@@ -575,69 +597,61 @@ void UpdaterWheel::preintegration_2D(double dt, WheelData data1, WheelData data2
   double x_next = x_2D + (1.0 / 6.0) * (k1_x + 2 * k2_x + 2 * k3_x + k4_x);
   double y_next = y_2D + (1.0 / 6.0) * (k1_y + 2 * k2_y + 2 * k3_y + k4_y);
 
-  if (abs(w1) < 0.0001) // In case w is too small, apply L'Hopital rule
+  if (abs(w1) < SMALL_ANGULAR_RATE) // In case w is too small, apply L'Hopital rule
     y_next = y_2D - v1 * sin(th_2D - w1 * dt) * dt;
   else // use discrete integration value for y because it is working better for some unknown reason...
     y_next = y_2D - (v1 * (cos(th_2D - w1 * dt) - cos(th_2D))) / w1;
 
   // Compute noise Jacobians respect to measurements
   Matrix<double, 1, 2> Hwn, Hvn;
-  if (state->op->wheel->type == "Wheel2DAng") {
+  switch (ModalityOf(state->op->wheel->type)) {
+  case WheelModality::Angular:
     Hwn(0, 0) = rl / b;
     Hwn(0, 1) = -rr / b;
     Hvn(0, 0) = -rl / 2;
     Hvn(0, 1) = -rr / 2;
-  } else if (state->op->wheel->type == "Wheel2DLin") {
+    break;
+  case WheelModality::Linear:
     Hwn(0, 0) = 1.0 / b;
     Hwn(0, 1) = -1.0 / b;
     Hvn(0, 0) = -1.0 / 2;
     Hvn(0, 1) = -1.0 / 2;
-  } else if (state->op->wheel->type == "Wheel2DCen") {
+    break;
+  case WheelModality::Centered:
     Hwn(0, 0) = 1;
     Hwn(0, 1) = 0;
     Hvn(0, 0) = 0;
     Hvn(0, 1) = 1;
+    break;
   }
 
   // Compute Jacobians respect to state preintegrated state and the measurement
-  double h_thw = dt;
-  double h_xth = (v1 * (cos(th_2D - w1 * dt) - cos(th_2D))) / w1;
-  double h_yth = -(v1 * (sin(th_2D - w1 * dt) - sin(th_2D))) / w1;
-  double h_xw = (v1 * (sin(th_2D - w1 * dt) - sin(th_2D))) / w1 / w1 + (v1 * cos(th_2D - w1 * dt) * dt) / w1;
-  double h_yw = (v1 * (cos(th_2D - w1 * dt) - cos(th_2D))) / w1 / w1 - (v1 * sin(th_2D - w1 * dt) * dt) / w1;
-  double h_xv = -(sin(th_2D - w1 * dt) - sin(th_2D)) / w1;
-  double h_yv = -(cos(th_2D - w1 * dt) - cos(th_2D)) / w1;
-
-  // In case w is too small, apply L'Hopital rule
-  if (abs(w1) < 0.0001) {
-    h_xth = v1 * sin(th_2D) * dt;
-    h_yth = v1 * cos(th_2D) * dt;
-    h_xw = v1 * sin(th_2D) * dt * dt / 2;
-    h_yw = v1 * cos(th_2D) * dt * dt / 2;
-    h_xv = cos(th_2D) * dt;
-    h_yv = -sin(th_2D) * dt;
-  }
+  const PreintegrationPartials2D partials = ComputePreintegrationPartials2D(dt, w1, v1, th_2D);
 
   // Compute the Jacobians with respect to the current preintegrated states
   Matrix3d Phi_tr = Matrix3d::Identity();
-  Phi_tr(1, 0) = h_xth;
-  Phi_tr(2, 0) = h_yth;
+  Phi_tr(1, 0) = partials.h_xth;
+  Phi_tr(2, 0) = partials.h_yth;
 
   // compute noise Jacobian
   Matrix<double, 3, 2> Phi_ns = Matrix<double, 3, 2>::Zero();
-  Phi_ns.block(0, 0, 1, 2) = h_thw * Hwn;
-  Phi_ns.block(1, 0, 1, 2) = h_xw * Hwn + h_xv * Hvn;
-  Phi_ns.block(2, 0, 1, 2) = h_yw * Hwn + h_yv * Hvn;
+  Phi_ns.block(0, 0, 1, 2) = partials.h_thw * Hwn;
+  Phi_ns.block(1, 0, 1, 2) = partials.h_xw * Hwn + partials.h_xv * Hvn;
+  Phi_ns.block(2, 0, 1, 2) = partials.h_yw * Hwn + partials.h_yv * Hvn;
 
   // Compute Measurement covariance
   Matrix2d Q = Matrix2d::Zero();
-  if (state->op->wheel->type == "Wheel2DAng") {
+  switch (ModalityOf(state->op->wheel->type)) {
+  case WheelModality::Angular:
     Q = pow(state->op->wheel->noise_w, 2) / dt * Matrix2d::Identity();
-  } else if (state->op->wheel->type == "Wheel2DLin") {
+    break;
+  case WheelModality::Linear:
     Q = pow(state->op->wheel->noise_v, 2) / dt * Matrix2d::Identity();
-  } else if (state->op->wheel->type == "Wheel2DCen") {
+    break;
+  case WheelModality::Centered:
     Q(0, 0) = pow(state->op->wheel->noise_w, 2) / dt;
     Q(1, 1) = pow(state->op->wheel->noise_v, 2) / dt;
+    break;
   }
 
   // integrate noise covarinace
@@ -650,7 +664,16 @@ void UpdaterWheel::preintegration_2D(double dt, WheelData data1, WheelData data2
   y_2D = y_next;
 }
 
-void UpdaterWheel::preintegration_3D(double dt, WheelData data1, WheelData data2) {
+Matrix<double, 6, 6> UpdaterWheel::ComputePhiTr3D(const Matrix3d &R_3D, const Matrix3d &R_new,
+                                                    const Vector3d &p_3D, const Vector3d &new_p) {
+  Matrix<double, 6, 6> Phi_tr = Matrix<double, 6, 6>::Zero();
+  Phi_tr.block(0, 0, 3, 3) = R_new * R_3D.transpose();
+  Phi_tr.block(3, 0, 3, 3) = -R_3D.transpose() * skew_x(R_3D * (new_p - p_3D));
+  Phi_tr.block(3, 3, 3, 3) = Matrix3d::Identity();
+  return Phi_tr;
+}
+
+void UpdaterWheel::preintegration_3D(double dt, const WheelData &data1, const WheelData &data2) {
 
   // load intrinsic values
   double rl = state->wheel_intrinsic->value()(0);
@@ -659,24 +682,25 @@ void UpdaterWheel::preintegration_3D(double dt, WheelData data1, WheelData data2
 
   // compute the velocities at the odometry frame
   Vector3d w_hat1, v_hat1, w_hat2, v_hat2;
-  if (state->op->wheel->type == "Wheel3DAng") {
+  switch (ModalityOf(state->op->wheel->type)) {
+  case WheelModality::Angular:
     w_hat1 << 0, 0, (data1.m2 * rr - data1.m1 * rl) / b;
     v_hat1 << (data1.m2 * rr + data1.m1 * rl) / 2, 0, 0;
     w_hat2 << 0, 0, (data2.m2 * rr - data2.m1 * rl) / b;
     v_hat2 << (data2.m2 * rr + data2.m1 * rl) / 2, 0, 0;
-  } else if (state->op->wheel->type == "Wheel3DLin") {
+    break;
+  case WheelModality::Linear:
     w_hat1 << 0, 0, (data1.m2 - data1.m1) / b;
     v_hat1 << (data1.m2 + data1.m1) / 2, 0, 0;
     w_hat2 << 0, 0, (data2.m2 - data2.m1) / b;
     v_hat2 << (data2.m2 + data2.m1) / 2, 0, 0;
-  } else if (state->op->wheel->type == "Wheel3DCen") {
+    break;
+  case WheelModality::Centered:
     w_hat1 << 0, 0, data1.m1;
     v_hat1 << data1.m2, 0, 0;
     w_hat2 << 0, 0, data2.m1;
     v_hat2 << data2.m2, 0, 0;
-  } else {
-    PRINT4("Wrong wheel type selected!");
-    exit(EXIT_FAILURE);
+    break;
   }
 
   // =========================================================
@@ -732,37 +756,35 @@ void UpdaterWheel::preintegration_3D(double dt, WheelData data1, WheelData data2
 
   // compute measurement noise
   Matrix<double, 6, 6> Q = Matrix<double, 6, 6>::Zero();
-  if (state->op->wheel->type == "Wheel3DAng") {
-    Q.block(0, 0, 1, 1) << pow(state->op->wheel->noise_w, 2) / dt;
+  switch (ModalityOf(state->op->wheel->type)) {
+  case WheelModality::Angular:
+    Q.block(0, 0, 1, 1) << pow(state->op->wheel->noise_p, 2) / dt;
     Q.block(1, 1, 1, 1) << pow(state->op->wheel->noise_p, 2) / dt;
-    Q.block(2, 2, 1, 1) << pow(state->op->wheel->noise_p, 2) / dt;
-    Q.block(3, 3, 1, 1) << pow(state->op->wheel->noise_w, 2) / dt;
-    Q.block(4, 4, 1, 1) << pow(state->op->wheel->noise_p, 2) / dt;
-    Q.block(5, 5, 1, 1) << pow(state->op->wheel->noise_p, 2) / dt;
-  } else if (state->op->wheel->type == "Wheel3DLin") {
-    Q.block(0, 0, 1, 1) << pow(state->op->wheel->noise_v, 2) / b / b / dt;
-    Q.block(1, 1, 1, 1) << pow(state->op->wheel->noise_p, 2) / dt;
-    Q.block(2, 2, 1, 1) << pow(state->op->wheel->noise_p, 2) / dt;
-    Q.block(3, 3, 1, 1) << pow(state->op->wheel->noise_v, 2) / 2 / 2 / dt;
-    Q.block(4, 4, 1, 1) << pow(state->op->wheel->noise_p, 2) / dt;
-    Q.block(5, 5, 1, 1) << pow(state->op->wheel->noise_p, 2) / dt;
-  } else if (state->op->wheel->type == "Wheel3DCen") {
-    Q.block(0, 0, 1, 1) << pow(state->op->wheel->noise_w, 2) / dt;
-    Q.block(1, 1, 1, 1) << pow(state->op->wheel->noise_p, 2) / dt;
-    Q.block(2, 2, 1, 1) << pow(state->op->wheel->noise_p, 2) / dt;
+    Q.block(2, 2, 1, 1) << pow(state->op->wheel->noise_w, 2) / dt;
     Q.block(3, 3, 1, 1) << pow(state->op->wheel->noise_v, 2) / dt;
     Q.block(4, 4, 1, 1) << pow(state->op->wheel->noise_p, 2) / dt;
     Q.block(5, 5, 1, 1) << pow(state->op->wheel->noise_p, 2) / dt;
-  } else {
-    PRINT4(RED "[MINS] Invalid wheel type provided.\n" RESET);
-    exit(EXIT_FAILURE);
+    break;
+  case WheelModality::Linear:
+    Q.block(0, 0, 1, 1) << pow(state->op->wheel->noise_p, 2) / dt;
+    Q.block(1, 1, 1, 1) << pow(state->op->wheel->noise_p, 2) / dt;
+    Q.block(2, 2, 1, 1) << 2 * pow(state->op->wheel->noise_v, 2) / b / b / dt;
+    Q.block(3, 3, 1, 1) << pow(state->op->wheel->noise_v, 2) / 2 / dt;
+    Q.block(4, 4, 1, 1) << pow(state->op->wheel->noise_p, 2) / dt;
+    Q.block(5, 5, 1, 1) << pow(state->op->wheel->noise_p, 2) / dt;
+    break;
+  case WheelModality::Centered:
+    Q.block(0, 0, 1, 1) << pow(state->op->wheel->noise_p, 2) / dt;
+    Q.block(1, 1, 1, 1) << pow(state->op->wheel->noise_p, 2) / dt;
+    Q.block(2, 2, 1, 1) << pow(state->op->wheel->noise_w, 2) / dt;
+    Q.block(3, 3, 1, 1) << pow(state->op->wheel->noise_v, 2) / dt;
+    Q.block(4, 4, 1, 1) << pow(state->op->wheel->noise_p, 2) / dt;
+    Q.block(5, 5, 1, 1) << pow(state->op->wheel->noise_p, 2) / dt;
+    break;
   }
 
   // Compute the Jacobians with respect to the current preintegrated measurements
-  Matrix<double, 6, 6> Phi_tr = Matrix<double, 6, 6>::Zero();
-  Phi_tr.block(0, 0, 3, 3) = R_new * R_3D.transpose();
-  Phi_tr.block(3, 0, 3, 3) = -R_3D.transpose() * skew_x(R_3D.transpose() * (new_p - p_3D));
-  Phi_tr.block(3, 3, 3, 3) = Matrix3d::Identity();
+  Matrix<double, 6, 6> Phi_tr = ComputePhiTr3D(R_3D, R_new, p_3D, new_p);
 
   // Compute the Jacobians with respect to the current preintegrated noises
   Matrix<double, 6, 6> Phi_ns = Matrix<double, 6, 6>::Zero();
@@ -794,22 +816,26 @@ bool UpdaterWheel::get_bounding_data(double t_given, vector<WheelData> &data_sta
   }
   return false;
 }
-void UpdaterWheel::feed_measurement(WheelData data) {
+void UpdaterWheel::feed_measurement(const WheelData &data) {
+  // read the time before touching the stack, as data may alias one of its elements
+  double time = data.time;
   data_stack.push_back(data);
 
   // erase measurements that are to old
   for (auto it = data_stack.begin(); it != data_stack.end();) {
-    if (data.time - it->time > 100)
+    if (time - it->time > MEASUREMENT_HISTORY_SECONDS)
       it = data_stack.erase(it);
     else
       ++it;
   }
 
-  t_hist.size() > 100 ? t_hist.pop_front() : void(); // remove if we have too many
-  t_hist.push_back(data.time);
+  if (t_hist.size() > MAX_TIME_HISTORY) { // remove if we have too many
+    t_hist.pop_front();
+  }
+  t_hist.push_back(time);
 }
 
-WheelData UpdaterWheel::interpolate_data(const WheelData data1, const WheelData data2, double timestamp) {
+WheelData UpdaterWheel::interpolate_data(const WheelData &data1, const WheelData &data2, double timestamp) {
   // time-distance lambda
   double lambda = (timestamp - data1.time) / (data2.time - data1.time);
   // interpolate between the two times
@@ -819,3 +845,4 @@ WheelData UpdaterWheel::interpolate_data(const WheelData data1, const WheelData 
   data.m2 = (1 - lambda) * data1.m2 + lambda * data2.m2;
   return data;
 }
+

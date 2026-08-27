@@ -27,16 +27,17 @@
 
 #include "OptionsSimulation.h"
 #include "OptionsEstimator.h"
+#include "utils/PackagePath.h"
 #include "utils/Print_Logger.h"
+#include "utils/fs_compat.h"
 #include "utils/opencv_yaml_parse.h"
-#include <ros/package.h>
 
 mins::OptionsSimulation::OptionsSimulation() { est_true = std::make_shared<OptionsEstimator>(); }
 
 void mins::OptionsSimulation::load_print(const std::shared_ptr<ov_core::YamlParser> &parser) {
   if (parser != nullptr) {
     std::string f = "config_simulation";
-    if (!boost::filesystem::exists(parser->get_config_folder() + f + ".yaml")) {
+    if (!fs::exists(parser->get_config_folder() + f + ".yaml")) {
       return;
     }
     parser->parse_external(f, "sim", "seed", seed);
@@ -61,8 +62,9 @@ void mins::OptionsSimulation::load_print(const std::shared_ptr<ov_core::YamlPars
     WtoE_trans.block(0, 0, 4, 1) = ov_core::rot_2_quat(T.block(0, 0, 3, 3));
     WtoE_trans.block(4, 0, 3, 1) = T.block(0, 3, 3, 1);
     // Replace MINS_DATA_DIR if we have it
-    BSpline_path.substr(0, 13) == "MINS_DATA_DIR" ? BSpline_path.replace(0, 13, ros::package::getPath("mins_data")) : std::string();
-    planes_path.substr(0, 13) == "MINS_DATA_DIR" ? planes_path.replace(0, 13, ros::package::getPath("mins_data")) : std::string();
+    auto dir = mins::get_package_path("mins_data");
+    BSpline_path.substr(0, 13) == "MINS_DATA_DIR" ? BSpline_path.replace(0, 13, dir) : std::string();
+    planes_path.substr(0, 13) == "MINS_DATA_DIR" ? planes_path.replace(0, 13, dir) : std::string();
 
     // Load Ground truth estimator parameters
     est_true->load(parser);

@@ -51,13 +51,15 @@
 #include "update/wheel/WheelTypes.h"
 #include "utils/Jabdongsani.h"
 #include "utils/TimeChecker.h"
-#include <pcl/point_cloud.h>
-#include <pcl/point_types.h>
-
+#include "update/lidar/PointCloud.h"
 using namespace std;
 using namespace mins;
 
-SystemManager::SystemManager(shared_ptr<OptionsEstimator> op, shared_ptr<Simulator> sim) {
+SystemManager::SystemManager(shared_ptr<OptionsEstimator> op, shared_ptr<Simulator> sim): op(op), sim(sim) {
+  init();
+}
+
+void SystemManager::init() {
   // Create "THE MOST IMPORTANT" state
   state = std::make_shared<State>(op, sim);
   tc_sensors = std::make_shared<TimeChecker>();
@@ -174,7 +176,8 @@ void SystemManager::feed_measurement_wheel(const WheelData &wheel) {
   state->initialized ? tc_sensors->dong("WHL") : void();
 }
 
-void SystemManager::feed_measurement_lidar(std::shared_ptr<pcl::PointCloud<pcl::PointXYZ>> lidar) {
+
+void SystemManager::feed_measurement_lidar(std::shared_ptr<mins::PointCloud<mins::PointXYZ>> lidar) {
   if (!state->op->lidar->enabled)
     return;
   state->initialized ? tc_sensors->ding("LDR") : void();
@@ -481,8 +484,12 @@ void SystemManager::print_status() {
 
   // Wheel
   auto w_op = state->op->wheel;
-  if (w_op->enabled && up_whl->t_hist.size() > 2)
-    PRINT2(" WHL %.1f", (up_whl->t_hist.size() - 1) / (up_whl->t_hist.back() - up_whl->t_hist.front()));
+  if (w_op->enabled)
+  {
+
+    if (up_whl->t_hist.size() > 2)
+      PRINT2(" WHL %.1f", (up_whl->t_hist.size() - 1) / (up_whl->t_hist.back() - up_whl->t_hist.front()));
+  }
 
   PRINT2("\n");
 

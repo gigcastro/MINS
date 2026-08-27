@@ -47,9 +47,7 @@
 #include "utils/dataset_reader.h"
 #include "utils/quat_ops.h"
 #include <memory>
-#include <pcl/point_cloud.h>
-#include <pcl/point_types.h>
-
+#include "update/lidar/PointCloud.h"
 using namespace std;
 using namespace ov_core;
 using namespace mins;
@@ -682,7 +680,8 @@ bool Simulator::get_next_wheel(WheelData &wheel) {
   double b = op->sim->est_true->wheel->intrinsics(2);
 
   // Now, formulate measurements depend on what type of measurement we want
-  if (op->sim->est_true->wheel->type == "Wheel2DAng" || op->sim->est_true->wheel->type == "Wheel3DAng") {
+  switch (ModalityOf(op->sim->est_true->wheel->type)) {
+  case WheelModality::Angular: {
     // compute each wheels angular velocity
     double wl = (2 * v - b * w) / 2 / rl;
     double wr = (2 * v + b * w) / 2 / rr;
@@ -692,7 +691,9 @@ bool Simulator::get_next_wheel(WheelData &wheel) {
     }
     wheel.m1 = wl;
     wheel.m2 = wr;
-  } else if (op->sim->est_true->wheel->type == "Wheel2DLin" || op->sim->est_true->wheel->type == "Wheel3DLin") {
+    break;
+  }
+  case WheelModality::Linear: {
     // compute each wheels linear velocity
     double vl = (2 * v - b * w) / 2;
     double vr = (2 * v + b * w) / 2;
@@ -702,23 +703,23 @@ bool Simulator::get_next_wheel(WheelData &wheel) {
     }
     wheel.m1 = vl;
     wheel.m2 = vr;
-  } else if (op->sim->est_true->wheel->type == "Wheel2DCen" || op->sim->est_true->wheel->type == "Wheel3DCen") {
+    break;
+  }
+  case WheelModality::Centered:
     if (!op->sim->remove_noise) {
       v += op->sim->est_true->wheel->noise_v / sqrt(dt) * noise(seed_wheel);
       w += op->sim->est_true->wheel->noise_w / sqrt(dt) * noise(seed_wheel);
     }
     wheel.m1 = w;
     wheel.m2 = v;
-  } else {
-    PRINT4("No valid wheel measurement type selected\n");
-    exit(EXIT_FAILURE);
+    break;
   }
   // pass success
-  PRINT1("[SIM] Wheel measurement: %.3f|%s|%.3f,%.3f\n", wheel.time, op->sim->est_true->wheel->type.c_str(), wheel.m1, wheel.m2);
+  PRINT1("[SIM] Wheel measurement: %.3f|%s|%.3f,%.3f\n", wheel.time, ToString(op->sim->est_true->wheel->type), wheel.m1, wheel.m2);
   return true;
 }
 
-bool Simulator::get_next_lidar(std::shared_ptr<pcl::PointCloud<pcl::PointXYZ>> lidar) {
+bool Simulator::get_next_lidar(std::shared_ptr<mins::PointCloud<mins::PointXYZ>> lidar) {
 
   // check turn
   string sensor_type;
@@ -739,7 +740,7 @@ bool Simulator::get_next_lidar(std::shared_ptr<pcl::PointCloud<pcl::PointXYZ>> l
   return true;
 }
 
-bool Simulator::get_lidar_pointcloud(std::shared_ptr<pcl::PointCloud<pcl::PointXYZ>> lidar, double time, int id, std::shared_ptr<OptionsLidar> lidar_op) {
+bool Simulator::get_lidar_pointcloud(std::shared_ptr<mins::PointCloud<mins::PointXYZ>> lidar, double time, int id, std::shared_ptr<OptionsLidar> lidar_op) {
   // Lidar id and timestamp
   lidar->header.frame_id = to_string(id);
   lidar->header.stamp = (unsigned long)((time - lidar_op->dt.at(id)) * 1000); // Delivered in micro second
@@ -794,7 +795,7 @@ bool Simulator::get_lidar_pointcloud(std::shared_ptr<pcl::PointCloud<pcl::PointX
         continue;
 
       // create point
-      pcl::PointXYZ p;
+      mins::PointXYZ p;
       p.x = d * sin(ph) * cos(th);
       p.y = d * sin(ph) * sin(th);
       p.z = d * cos(ph);
