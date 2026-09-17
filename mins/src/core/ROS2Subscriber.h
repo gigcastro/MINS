@@ -68,11 +68,13 @@ template <typename M> std::shared_ptr<message_filters::Subscriber<M>> make_mf_su
 class SystemManager;
 struct OptionsEstimator;
 class ROS2Publisher;
+class State_Logger;
 class ROS2Subscriber {
 
 public:
-  /// ROS message subscriber
-  ROS2Subscriber(shared_ptr<rclcpp::Node> node, shared_ptr<SystemManager> sys, shared_ptr<ROS2Publisher> pub);
+  /// ROS message subscriber. Pass a State_Logger to record the trajectory to file
+  /// (as the ROS1 run_bag path does); nullptr disables recording.
+  ROS2Subscriber(shared_ptr<rclcpp::Node> node, shared_ptr<SystemManager> sys, shared_ptr<ROS2Publisher> pub, shared_ptr<State_Logger> save = nullptr);
 
   /// Callback for IMU
   void callback_inertial(const Imu::SharedPtr msg);
@@ -105,6 +107,9 @@ private:
 
   /// ROS publisher
   shared_ptr<ROS2Publisher> pub;
+
+  /// Trajectory logger (optional)
+  shared_ptr<State_Logger> save;
 
   /// Options
   shared_ptr<OptionsEstimator> op;

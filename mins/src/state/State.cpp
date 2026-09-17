@@ -1347,6 +1347,10 @@ bool State::create_new_cpi_integrate(double t_given) {
     return false;
   }
 
+  // Cannot integrate without a hooked propagator
+  if (prop == nullptr)
+    return false;
+
   // Get IMU data to compute CPI with
   vector<ImuData> imu_data;
   if (clone_t <= t_given ? !prop->select_imu_readings(clone_t, t_given, imu_data) : !prop->select_imu_readings(t_given, clone_t, imu_data))

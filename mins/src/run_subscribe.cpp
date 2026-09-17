@@ -78,7 +78,7 @@ int main(int argc, char **argv) {
   shared_ptr<SystemManager> sys = make_shared<SystemManager>(op->est);
 #if ROS_AVAILABLE == 2
   shared_ptr<ROS2Publisher> pub = make_shared<ROS2Publisher>(node, sys, op);
-  shared_ptr<ROS2Subscriber> sub = make_shared<ROS2Subscriber>(node, sys, pub);
+  shared_ptr<ROS2Subscriber> sub = make_shared<ROS2Subscriber>(node, sys, pub, op->sys->save_trajectory ? save : nullptr);
 #endif
 
   // Ensure we read in all parameters required

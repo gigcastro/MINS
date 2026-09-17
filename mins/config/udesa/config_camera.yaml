@@ -1,0 +1,67 @@
+%YAML:1.0 # need to specify the file type at the top!
+
+cam:
+  enabled: true
+  max_n: 2
+  use_stereo: false # as stereo cameras do not have the same exact tstamp
+  stereo_pair: [0, 1]
+  do_calib_ext: true
+  do_calib_int: false
+  do_calib_dt: true
+  n_pts: 1500
+  fast: 30
+  grid_x: 15
+  grid_y: 15
+  min_px_dist: 15
+  knn: 0.65
+  downsample: true
+  histogram_method: "HISTOGRAM" # NONE, HISTOGRAM, CLAHE
+  max_slam: 0
+  max_msckf: 50
+  feat_rep: "GLOBAL_FULL_INVERSE_DEPTH"
+  init_cov_dt: 1e-4
+  init_cov_ex_o: 1e-4
+  init_cov_ex_p: 1e-4
+  init_cov_in_k: 1e-2
+  init_cov_in_c: 1e-1
+  init_cov_in_r: 1e-6
+  sigma_px: 2
+  chi2_mult: 1
+
+  # feature related
+  fi_min_dist: 0.25
+  fi_max_dist: 150
+  fi_max_baseline: 2000
+  fi_max_cond_number: 10000
+
+  # ==================================================================
+  # ==================================================================
+
+cam0:
+  timeoffset:  0.016
+  T_imu_cam: # rotation from camera to IMU R_CtoI, position of camera in IMU p_CinI
+    - [ 0.03126828,  0.00639218,  0.99949059,  1.81586193]
+    - [ 0.99950511,  0.00324197, -0.03128947, -0.27723510]
+    - [-0.00344033,  0.99997431, -0.00628765, -0.93263362]
+    - [ 0.0,         0.0,         0.0,         1.0]
+  distortion_coeffs: [-0.020915965282134488, 0.03063332277912466, 0.002045867777107803, -0.003086122477800863]
+  distortion_model: radtan
+  intrinsics: [718.7645387940635, 716.7417408725463, 593.8658824468442, 521.379241388709]
+  resolution: [1224, 1026]
+  topic: "/cam1/image_raw/compressed"
+  compressed: true
+
+cam1:
+  timeoffset:  0.056
+  T_imu_cam: # rotation from camera to IMU R_CtoI, position of camera in IMU p_CinI
+    - [ 0.02798703,  0.00358628,  0.99960185,  1.86323186]
+    - [ 0.99952983, -0.01262870, -0.02793971,  0.25022070]
+    - [ 0.01252348,  0.99991382, -0.00393803, -0.92147842]
+    - [ 0.0,         0.0,         0.0,         1.0]
+  distortion_coeffs: [-0.02458962682813034, 0.03272658558906052, 0.0025590396911031113, 0.001147427206994338]
+  distortion_model: radtan
+  intrinsics: [719.4705213043574, 717.2456646487565, 621.392121670097, 515.3163787488853]
+  resolution: [1224, 1026]
+  topic: "/cam5/image_raw/compressed"
+  compressed: true
+

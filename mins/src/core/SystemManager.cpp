@@ -73,7 +73,9 @@ void SystemManager::init() {
 
   // Propagator & Initializer
   prop = std::make_shared<Propagator>(state);
-  state->op->use_imu_res ? state->hook_propagator(prop) : void();
+  // State needs the propagator for CPI computation (State::create_new_cpi_integrate)
+  // regardless of use_imu_res; leaving it null segfaults on the first clone after init.
+  state->hook_propagator(prop);
   initializer = std::make_shared<Initializer>(state, prop, up_whl, up_gps, up_cam, up_ldr, sim);
 
   // Average interpolation order and cloning frequency

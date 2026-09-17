@@ -121,11 +121,10 @@ bool LidarHelper::transform_to_map(shared_ptr<State> state, shared_ptr<LiDARData
     PRINT4("UpdaterLidar::register_scan::Cannot get pose for LiDAR at %.4f\n", lidar->time + dt);
     return false;
   }
-  state->get_interpolated_pose(ikd->time + dt, RGtoA, pAinG);
   if (!state->get_interpolated_pose(ikd->time + dt, RGtoA, pAinG)) {
-    PRINT4("UpdaterLidar::register_scan::Cannot get pose for map at %.4f\n", ikd->time + dt);
-    state->print_info();
-    assert(0);
+    // Map anchor outside the clone window (see propagate_map_to_newest_clone) - skip this scan.
+    PRINT2(YELLOW "UpdaterLidar::register_scan::Cannot get pose for map at %.4f\n" RESET, ikd->time + dt);
+    return false;
   }
 
   // New LiDAR frame
@@ -198,12 +197,12 @@ void LidarHelper::propagate_map_to_newest_clone(shared_ptr<State> state, shared_
   Matrix3d RGtoIold;
   Vector3d pIoldinG;
   if (!state->get_interpolated_pose(ikd->time + dt, RGtoIold, pIoldinG)) {
-    PRINT4(RED "[LiDAR]propagate_map_to_newest_clone::Cannot get the bounding_poses_n for Map %d!\n" RESET, ikd->id);
-    PRINT4(RED "[LiDAR]propagate_map_to_newest_clone::ikd_anchor_time.at(lidar_inL->id): %.4f\n", ikd->time);
-    PRINT4(RED "[LiDAR]propagate_map_to_newest_clone::dt: %.4f\n", dt);
-    PRINT4(RED "[LiDAR]propagate_map_to_newest_clone::lidar_inL->time + dt: %.4f\n", ikd->time + dt);
-    state->print_info();
-    exit(EXIT_FAILURE);
+    // The map anchor fell behind the clone window (can happen right after initialization,
+    // when a scan stacked pre-init seeded the map). The anchor pose is gone, so the map
+    // cannot be relocated - drop it and let the next scan re-initialize it.
+    PRINT2(YELLOW "[LiDAR]propagate_map_to_newest_clone::Map %d anchor (%.4f) is outside the clone window; resetting the map.\n" RESET, ikd->id, ikd->time + dt);
+    ikd->tree->reset();
+    return;
   }
   Matrix3d RGtoInew = state->clones.at(state->newest_clone_time())->Rot();
   Vector3d pInewinG = state->clones.at(state->newest_clone_time())->pos();

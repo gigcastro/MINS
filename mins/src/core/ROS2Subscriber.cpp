@@ -34,17 +34,20 @@
 #include "options/OptionsGPS.h"
 #include "options/OptionsIMU.h"
 #include "options/OptionsLidar.h"
+#include "options/OptionsSystem.h"
 #include "options/OptionsWheel.h"
 #include "state/State.h"
 #include "update/gps/GPSTypes.h"
 #include "update/wheel/WheelTypes.h"
 #include "utils/Print_Logger.h"
+#include "utils/State_Logger.h"
 
 using namespace std;
 using namespace Eigen;
 using namespace mins;
 
-ROS2Subscriber::ROS2Subscriber(std::shared_ptr<rclcpp::Node> node, std::shared_ptr<SystemManager> sys, std::shared_ptr<ROS2Publisher> pub) : node(node), sys(sys), pub(pub) {
+ROS2Subscriber::ROS2Subscriber(std::shared_ptr<rclcpp::Node> node, std::shared_ptr<SystemManager> sys, std::shared_ptr<ROS2Publisher> pub, std::shared_ptr<State_Logger> save)
+    : node(node), sys(sys), pub(pub), save(save) {
   // Copy option for easier access
   op = sys->state->op;
 
@@ -137,6 +140,7 @@ void ROS2Subscriber::callback_inertial(const Imu::SharedPtr msg) {
   ov_core::ImuData imu = ROS2Helper::Imu2Data(msg);
   if (sys->feed_measurement_imu(imu)) {
     pub->visualize();
+    save ? save->save_trajectory_to_file(sys) : void();
   }
   pub->publish_imu();
   PRINT1(YELLOW "[SUB] IMU measurement: %.3f" RESET, imu.timestamp);

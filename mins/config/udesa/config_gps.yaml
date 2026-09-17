@@ -1,0 +1,31 @@
+%YAML:1.0 # need to specify the file type at the top!
+
+gps:
+  enabled: true
+  max_n: 2
+  do_calib_ext: false
+  do_calib_dt: false
+  init_distance: 5.0
+  init_closed_form: false
+  init_cov_dt: 5e-1
+  init_cov_ex: 5e-2
+  init_cov_inflation: 0.01
+  chi2_mult: 9999
+  overwrite_noise: true
+  noise: 0.05
+
+# Antenna assignment measured from the data (sanisidro_0): the ENU vector between the
+# two fixes on straight segments is (-3.3, -0.3, -1.0) m in the body frame, so
+# /ublox_moving_base is the REAR antenna and /ublox_rover the FRONT one. With the
+# lever arms swapped the other way the filter converges to a ~160 deg yaw error
+# (GPS residuals ~10 m, camera features rendered beside the car instead of ahead).
+gps0:
+  timeoffset: -0.03
+  pGinI: [-0.9, 0, -0.3]
+  topic: "/ublox_moving_base/fix"
+
+gps1:
+  timeoffset: -0.03
+  pGinI: [2.710104, -0.000183, -0.094153]
+  topic: "/ublox_rover/fix"
+

@@ -1,0 +1,38 @@
+%YAML:1.0 # need to specify the file type at the top!
+
+est:
+  gravity_mag: 9.81
+  clone_freq: 20
+  window_size: 1.0
+  intr_order: 3
+  intr_error_mlt: 3
+  intr_error_ori_thr: 0.007
+  intr_error_pos_thr: 0.003
+  intr_error_thr_mlt: 0.5
+  dt_extrapolation: 0.01
+
+  use_imu_res: false
+  use_imu_cov: false
+  use_pol_cov: true
+  dynamic_cloning: true
+
+# Slope of the polynomial pose interpolation error based on acceleration
+# order: 1 3 5 7 9
+# The smallest Hz row is the FLOOR dynamic cloning can pick. Rows below 10 Hz are removed:
+# at 4-5 Hz (standstill) the window holds fewer clones than the order-3 interpolation
+# needs (seen as "[State] Cannot add polynomial. #clones: 3, #required: 4"), GNSS/cam
+# updates stall at the stop->go transition and the state drifted >100 m before snapping
+# back. A 10 Hz floor costs little: cloning already averages ~9 Hz and the run has >3x
+# real-time margin.
+intr_ori:
+  Hz_10: [0.00288, 0.00126, 0.00108, 0.00102, 0.00102]
+  Hz_15: [0.00138, 0.00066, 0.00063, 0.00069, 0.00087]
+  Hz_20: [0.00084, 0.00012, 0.00006, 0.00003, 0.00003]
+  Hz_25: [0.00051, 0.00012, 0.00009, 0.00009, 0.00009]
+  Hz_30: [0.00036, 0.00006, 0.00003, 0.00003, 0.00003]
+intr_pos:
+  Hz_10: [0.00312, 0.00087, 0.00072, 0.00066, 0.00066]
+  Hz_15: [0.00144, 0.00021, 0.00018, 0.00015, 0.00015]
+  Hz_20: [0.00084, 0.00009, 0.00006, 0.00003, 0.00003]
+  Hz_25: [0.00054, 0.00006, 0.00003, 0.00003, 0.00003]
+  Hz_30: [0.00036, 0.00003, 0.00003, 0.00003, 0.00000]
