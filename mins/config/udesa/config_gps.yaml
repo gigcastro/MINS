@@ -3,8 +3,8 @@
 gps:
   enabled: true
   max_n: 2
-  do_calib_ext: false
-  do_calib_dt: false
+  do_calib_ext: true
+  do_calib_dt: true
   init_distance: 5.0
   init_closed_form: false
   init_cov_dt: 5e-1

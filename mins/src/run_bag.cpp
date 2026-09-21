@@ -44,7 +44,9 @@
 #include "utils/TimeChecker.h"
 #include "utils/dataset_reader.h"
 #include "utils/opencv_yaml_parse.h"
+#include <deque>
 #include <memory>
+#include <set>
 
 #if ROS_AVAILABLE == 2
 #include "core/ROS2Helper.h"
@@ -123,7 +125,7 @@ public:
 private:
   std::string topic, type;
   rclcpp::Time time;
-  std::shared_ptr<const rclcpp::SerializedMessage> serialized; // shared between 'view' and 'msgs' copies
+  std::shared_ptr<const rclcpp::SerializedMessage> serialized; // shared between window copies
 };
 } // namespace mins
 
@@ -155,25 +157,47 @@ shared_ptr<Options> op;
 shared_ptr<State_Logger> save;
 
 #if ROS_AVAILABLE == 2
-vector<MessageInstance> view; // messages on the topics we use, from all bags, in time order
-vector<MessageInstance> msgs;
+using Msg = mins::MessageInstance;
+/// One rosbag2 reader per bag. 'next' holds its upcoming message; nullptr = exhausted.
+struct BagSource {
+  unique_ptr<rosbag2_cpp::Reader> reader;
+  map<string, string> topic_types; // topic -> message type, to emulate rosbag::MessageInstance::instantiate
+  rosbag2_storage::SerializedBagMessageSharedPtr next;
+};
+vector<BagSource> sources;
 rclcpp::Time time_init, time_finish;
-rclcpp::Time bag_begin, bag_end; // time span of all bags (all topics), as rosbag::View reports it
+rclcpp::Time bag_begin, bag_end; // time span of all bags (all topics), as the metadata reports it
 #elif ROS_AVAILABLE == 1
-rosbag::View view;
-vector<rosbag::Bag> bags; // Changed to vector to support multiple bags
-vector<rosbag::MessageInstance> msgs;
+using Msg = rosbag::MessageInstance;
+rosbag::View view; // lazy, merged and time-ordered over all bags
+rosbag::View::iterator view_it;
+vector<rosbag::Bag> bags;
 ros::Time time_init, time_finish;
 #endif
-vector<map<double, int>> cam_map; // {cam[i], {img_time, idx in vec}}
-vector<int> used_index;
 
-// read parameters, init system, build map('cam_map') for cam msg ptr
+// The bags are streamed instead of loaded: the sources above are merged by time on the
+// fly and only a small sliding lookahead window is buffered, so bags that do not fit in
+// memory can be processed. The window exists solely because a stereo image's pair can
+// arrive slightly later in the stream; it must stay larger than the 10 ms pairing
+// tolerance of find_stereo_pair (each source must yield messages in time order, which
+// indexed rosbag2 storage and rosbag::View guarantee).
+const double WINDOW_SEC = 1.0;
+deque<Msg> window;                     // buffered lookahead, front is next to process
+uint64_t seq_front = 0;                // global sequence number of window.front()
+uint64_t seq_next = 0;                 // sequence number of the next buffered message
+set<uint64_t> used_seq;                // messages already consumed as stereo pairs
+vector<map<double, uint64_t>> cam_map; // {cam[i], {img_time, global seq}}
+
+// read parameters, init system, open the bags and prime the merged stream
 void system_setup(int argc, char **argv);
-// find the closest stereo pair's image msg ptr based on map('cam_map')
-bool find_stereo_pair(double meas_t, int cam_id, int &idx);
-// feed the camera measurement to the system. automatically find stereo pair measurement if it is
-bool feed_camera(int cam_id, int idx);
+// buffer the next message of the merged stream into the window (false when exhausted)
+bool buffer_next_message();
+// seconds of data currently buffered in the window
+double window_span();
+// find the closest stereo pair (global seq) of an image time, based on cam_map
+bool find_stereo_pair(double meas_t, int cam_id, uint64_t &pair_seq);
+// feed the camera measurement to the system. automatically finds the stereo pair if any
+bool feed_camera(int cam_id, const Msg &msg);
 
 // Main function
 int main(int argc, char **argv) {
@@ -181,28 +205,41 @@ int main(int argc, char **argv) {
   // Load parameters
   system_setup(argc, argv);
 
-  // process measurements
-  for (int i = 0; i < (int)msgs.size(); i++) {
+  // process the stream: keep WINDOW_SEC of lookahead buffered, consume from the front
+  bool stream_done = false;
 #if ROS_AVAILABLE == 2
-    if (!rclcpp::ok() || msgs.at(i).getTime() > time_finish)
+  while (rclcpp::ok()) {
 #elif ROS_AVAILABLE == 1
-    if (!ros::ok() || msgs.at(i).getTime() > time_finish)
+  while (ros::ok()) {
 #endif
+    while (!stream_done && (window.empty() || window_span() < WINDOW_SEC))
+      stream_done = !buffer_next_message();
+    if (window.empty())
+      break;
+
+    Msg msg = window.front(); // cheap copy, the payload is shared
+    window.pop_front();
+    uint64_t seq = seq_front++;
+
+    if (msg.getTime() > time_finish)
       break;
 
     // skip until start time
-    if (msgs.at(i).getTime() < time_init)
+    if (msg.getTime() < time_init)
       continue;
 
     // skip used measurements. Usually stereo img
-    if (find(used_index.begin(), used_index.end(), i) != used_index.end()) {
-      used_index.erase(std::remove(used_index.begin(), used_index.end(), i), used_index.end());
+    if (used_seq.erase(seq) > 0)
       continue;
-    }
 
     // ===================== IMU =====================
-    if (msgs.at(i).getTopic() == op->est->imu->topic) {
-      ov_core::ImuData imu = ROSHelper::Imu2Data(msgs.at(i).instantiate<Imu>());
+    if (msg.getTopic() == op->est->imu->topic) {
+      auto imu_msg = msg.instantiate<Imu>();
+      if (imu_msg == nullptr) {
+        PRINT4(RED "IMU topic has unmatched message type!. Exiting.\n" RESET);
+        exit(EXIT_FAILURE);
+      }
+      ov_core::ImuData imu = ROSHelper::Imu2Data(imu_msg);
       PRINT1(GREEN "[BAG] IMU measurement: %.3f" RESET, imu.timestamp);
       PRINT1(GREEN "|%.3f,%.3f,%.3f|%.3f,%.3f,%.3f\n" RESET, imu.wm(0), imu.wm(1), imu.wm(2), imu.am(0), imu.am(1), imu.am(2));
       bool visualize = sys->feed_measurement_imu(imu);
@@ -217,27 +254,28 @@ int main(int argc, char **argv) {
 
     // ===================== CAM =====================
     if (op->est->cam->enabled) {
-      for (int cam_id = 0; cam_id < op->est->cam->max_n; cam_id++) {
-        if (msgs.at(i).getTopic() == op->est->cam->topic.at(cam_id)) {
-          if (feed_camera(cam_id, i)) // this also adds index to [used_index] if stereo
-            pub->publish_cam_images({cam_id, i});
-          continue;
+      bool is_cam = false;
+      for (int cam_id = 0; cam_id < op->est->cam->max_n && !is_cam; cam_id++) {
+        if (msg.getTopic() == op->est->cam->topic.at(cam_id)) {
+          is_cam = true;
+          if (feed_camera(cam_id, msg))
+            pub->publish_cam_images({cam_id});
         }
       }
+      if (is_cam)
+        continue;
     }
 
     // ===================== WHEEL =====================
-    if (op->est->wheel->enabled && msgs.at(i).getTopic() == op->est->wheel->topic) {
-      auto wheel_j = msgs.at(i).instantiate<JointState>();
-      auto wheel_o = msgs.at(i).instantiate<Odometry>();
-
-      WheelData data;
-      if (wheel_j != nullptr) {
-        data = ROSHelper::JointState2Data(wheel_j);
-      } else {
-        data = ROSHelper::Odometry2Data(wheel_o);
+    if (op->est->wheel->enabled && msg.getTopic() == op->est->wheel->topic) {
+      auto wheel_j = msg.instantiate<JointState>();
+      auto wheel_o = msg.instantiate<Odometry>();
+      if ((wheel_j == nullptr && wheel_o == nullptr) || (wheel_j != nullptr && op->est->wheel->sub_topics.at(0) != wheel_j->name.at(0))) {
+        PRINT4(RED "Wheel type setting is wrong!\n" RESET);
+        exit(EXIT_FAILURE);
       }
 
+      WheelData data = wheel_j != nullptr ? ROSHelper::JointState2Data(wheel_j) : ROSHelper::Odometry2Data(wheel_o);
       PRINT1(MAGENTA "[BAG] WHL measurement: %.3f|%.3f,%.3f\n" RESET, data.time, data.m1, data.m2);
       sys->feed_measurement_wheel(data);
       continue;
@@ -245,10 +283,16 @@ int main(int argc, char **argv) {
 
     // ===================== GPS =====================
     if (op->est->gps->enabled) {
-      for (int gps_id = 0; gps_id < op->est->gps->max_n; gps_id++) {
-        if (msgs.at(i).getTopic() == op->est->gps->topic.at(gps_id)) {
-          auto ptr_fix = msgs.at(i).instantiate<NavSatFix>();
-          auto ptr_geo = msgs.at(i).instantiate<PoseStamped>();
+      bool is_gps = false;
+      for (int gps_id = 0; gps_id < op->est->gps->max_n && !is_gps; gps_id++) {
+        if (msg.getTopic() == op->est->gps->topic.at(gps_id)) {
+          is_gps = true;
+          auto ptr_fix = msg.instantiate<NavSatFix>();
+          auto ptr_geo = msg.instantiate<PoseStamped>();
+          if (ptr_fix == nullptr && ptr_geo == nullptr) {
+            PRINT4(RED "GPS topic has unmatched message type!. Exiting.\n" RESET);
+            exit(EXIT_FAILURE);
+          }
           GPSData data = (ptr_fix != nullptr ? ROSHelper::NavSatFix2Data(ptr_fix, gps_id) : ROSHelper::PoseStamped2Data(ptr_geo, gps_id, op->est->gps->noise));
           // In case GNSS message does not have GNSS noise value or we want to overwrite it, use preset values
           data.noise(0) <= 0.0 || op->est->gps->overwrite_noise ? data.noise(0) = op->est->gps->noise : double();
@@ -258,36 +302,53 @@ int main(int argc, char **argv) {
           PRINT1(CYAN "%.3f,%.3f,%.3f|%.3f,%.3f,%.3f\n" RESET, data.meas(0), data.meas(1), data.meas(2), data.noise(0), data.noise(1), data.noise(2));
           sys->feed_measurement_gps(data, ptr_fix != nullptr);
           pub->publish_gps(data, ptr_fix != nullptr);
-          continue;
         }
       }
+      if (is_gps)
+        continue;
     }
 
     // ==================== LiDAR ====================
     if (op->est->lidar->enabled) {
-      for (int lidar_id = 0; lidar_id < op->est->lidar->max_n; lidar_id++) {
-        if (msgs.at(i).getTopic() == op->est->lidar->topic.at(lidar_id)) {
-          std::shared_ptr<mins::PointCloud<mins::PointXYZ>> data = ROSHelper::rosPC2pclPC(msgs.at(i).instantiate<PointCloud2>(), lidar_id);
+      bool is_lidar = false;
+      for (int lidar_id = 0; lidar_id < op->est->lidar->max_n && !is_lidar; lidar_id++) {
+        if (msg.getTopic() == op->est->lidar->topic.at(lidar_id)) {
+          is_lidar = true;
+          auto pc2 = msg.instantiate<PointCloud2>();
+          if (pc2 == nullptr) {
+            PRINT4(RED "LiDAR topic has unmatched message type!. Exiting.\n" RESET);
+            exit(EXIT_FAILURE);
+          }
+          std::shared_ptr<mins::PointCloud<mins::PointXYZ>> data = ROSHelper::rosPC2pclPC(pc2, lidar_id);
           PRINT1("[BAG] LDR measurement: %.3f|%d|%d\n", (double)data->header.stamp / 1000, lidar_id, data->points.size());
           sys->feed_measurement_lidar(data);
           pub->publish_lidar_cloud(data);
-          continue;
         }
       }
+      if (is_lidar)
+        continue;
     }
 
     // ==================== VICON ====================
     if (op->est->vicon->enabled) {
-      for (int vicon_id = 0; vicon_id < op->est->vicon->max_n; vicon_id++) {
-        if (msgs.at(i).getTopic() == op->est->vicon->topic.at(vicon_id)) {
-          ViconData data = ROSHelper::PoseStamped2Data(msgs.at(i).instantiate<PoseStamped>(), vicon_id);
+      bool is_vicon = false;
+      for (int vicon_id = 0; vicon_id < op->est->vicon->max_n && !is_vicon; vicon_id++) {
+        if (msg.getTopic() == op->est->vicon->topic.at(vicon_id)) {
+          is_vicon = true;
+          auto pose = msg.instantiate<PoseStamped>();
+          if (pose == nullptr) {
+            PRINT4(RED "VICON topic has unmatched message type!. Exiting.\n" RESET);
+            exit(EXIT_FAILURE);
+          }
+          ViconData data = ROSHelper::PoseStamped2Data(pose, vicon_id);
           PRINT1("[BAG] VCN measurement: %.3f|%d|", data.time, data.id);
           PRINT1("%.3f,%.3f,%.3f|%.3f,%.3f,%.3f\n", data.pose(0), data.pose(1), data.pose(2), data.pose(3), data.pose(4), data.pose(5));
           sys->feed_measurement_vicon(data);
           pub->publish_vicon(data);
-          continue;
         }
       }
+      if (is_vicon)
+        continue;
     }
   }
 
@@ -306,14 +367,69 @@ int main(int argc, char **argv) {
   return EXIT_SUCCESS;
 }
 
-bool feed_camera(int cam_id, int idx) {
-  auto img_c = msgs.at(idx).instantiate<CompressedImage>();
-  auto img_i = msgs.at(idx).instantiate<Image>();
+double window_span() {
+  if (window.size() < 2)
+    return 0;
+#if ROS_AVAILABLE == 2
+  return (window.back().getTime() - window.front().getTime()).seconds();
+#elif ROS_AVAILABLE == 1
+  return (window.back().getTime() - window.front().getTime()).toSec();
+#endif
+}
+
+bool buffer_next_message() {
+#if ROS_AVAILABLE == 2
+  // k-way merge: take the earliest upcoming message over all bags
+  int best = -1;
+  for (int i = 0; i < (int)sources.size(); i++) {
+    if (sources.at(i).next == nullptr)
+      continue;
+    if (best < 0 || bag_stamp(*sources.at(i).next, 0) < bag_stamp(*sources.at(best).next, 0))
+      best = i;
+  }
+  if (best < 0)
+    return false;
+  BagSource &src = sources.at(best);
+  window.emplace_back(*src.next, src.topic_types.at(src.next->topic_name));
+  src.next = src.reader->has_next() ? src.reader->read_next() : nullptr;
+#elif ROS_AVAILABLE == 1
+  if (view_it == view.end())
+    return false;
+  window.push_back(*view_it);
+  ++view_it;
+#endif
+
+  // register camera stamps, so stereo pairs can be found by time
+  const Msg &msg = window.back();
+  if (op->est->cam->enabled) {
+    for (int id = 0; id < op->est->cam->max_n; id++) {
+      if (msg.getTopic() != op->est->cam->topic.at(id))
+        continue;
+      auto img_c = msg.instantiate<CompressedImage>();
+      auto img_i = msg.instantiate<Image>();
+      if (img_c != nullptr)
+        cam_map.at(id).insert({stamp_to_sec(img_c->header.stamp), seq_next});
+      else if (img_i != nullptr)
+        cam_map.at(id).insert({stamp_to_sec(img_i->header.stamp), seq_next});
+      else {
+        PRINT4(RED "Image topic has unmatched message types!. Exiting.\n" RESET);
+        exit(EXIT_FAILURE);
+      }
+      break;
+    }
+  }
+  seq_next++;
+  return true;
+}
+
+bool feed_camera(int cam_id, const Msg &msg) {
+  auto img_c = msg.instantiate<CompressedImage>();
+  auto img_i = msg.instantiate<Image>();
   // In case the image does not have timestamp (then 0), overwrite it with message time.
   if (img_c != nullptr && stamp_is_zero(img_c->header.stamp))
-    img_c->header.stamp = msgs.at(idx).getTime();
+    img_c->header.stamp = msg.getTime();
   if (img_i != nullptr && stamp_is_zero(img_i->header.stamp))
-    img_i->header.stamp = msgs.at(idx).getTime();
+    img_i->header.stamp = msg.getTime();
   ov_core::CameraData cam;
 
   // MONO
@@ -338,79 +454,67 @@ bool feed_camera(int cam_id, int idx) {
     return true;
   }
 
-  // STEREO - find stereo measurement
-  int msgs_id; // this is index position in msgs vector
+  // STEREO - find stereo measurement in the lookahead window
+  uint64_t pair_seq;
   int stereo_id = op->est->cam->stereo_pairs.at(cam_id);
   double meas_t = img_c != nullptr ? stamp_to_sec(img_c->header.stamp) : stamp_to_sec(img_i->header.stamp);
-  if (find_stereo_pair(meas_t, cam_id, msgs_id)) {
-
-    // should be always in the future
-    if (msgs_id < idx)
-      return false;
-
-    // record this index
-    used_index.push_back(msgs_id);
-
-    // get stereo pair image
-    if (img_c != nullptr) {
-      bool success0 = ROSHelper::Image2Data(img_c, cam_id, cam, op->est->cam);
-      bool success1 = ROSHelper::Image2Data(msgs.at(msgs_id).instantiate<CompressedImage>(), stereo_id, cam, op->est->cam);
-      if (success0 && success1) {
-        PRINT1(BLUE "[BAG] CAM measurement: %.3f|%d|%d\n" RESET, stamp_to_sec(img_c->header.stamp), cam_id, stereo_id);
-        sys->feed_measurement_camera(cam);
-        pub->publish_cam_images({cam_id, stereo_id});
-      }
-    } else {
-      bool success0 = ROSHelper::Image2Data(img_i, cam_id, cam, op->est->cam);
-      bool success1 = ROSHelper::Image2Data(msgs.at(msgs_id).instantiate<Image>(), stereo_id, cam, op->est->cam);
-      if (success0 && success1) {
-        PRINT1(BLUE "[BAG] CAM measurement: %.3f|%d|%d\n" RESET, stamp_to_sec(img_i->header.stamp), cam_id, stereo_id);
-        sys->feed_measurement_camera(cam);
-        pub->publish_cam_images({cam_id, stereo_id});
-      }
-    }
-  } else {
+  if (!find_stereo_pair(meas_t, cam_id, pair_seq)) {
     PRINT4(RED "Cannot find proper stereo pair of CAM%d!\n" RESET, cam_id);
     return false;
+  }
+
+  // consume the pair message: skip it when it reaches the front of the window
+  used_seq.insert(pair_seq);
+  const Msg &pair = window.at(pair_seq - seq_front);
+
+  // get stereo pair image
+  if (img_c != nullptr) {
+    bool success0 = ROSHelper::Image2Data(img_c, cam_id, cam, op->est->cam);
+    bool success1 = ROSHelper::Image2Data(pair.instantiate<CompressedImage>(), stereo_id, cam, op->est->cam);
+    if (success0 && success1) {
+      PRINT1(BLUE "[BAG] CAM measurement: %.3f|%d|%d\n" RESET, stamp_to_sec(img_c->header.stamp), cam_id, stereo_id);
+      sys->feed_measurement_camera(cam);
+      pub->publish_cam_images({cam_id, stereo_id});
+    }
+  } else {
+    bool success0 = ROSHelper::Image2Data(img_i, cam_id, cam, op->est->cam);
+    bool success1 = ROSHelper::Image2Data(pair.instantiate<Image>(), stereo_id, cam, op->est->cam);
+    if (success0 && success1) {
+      PRINT1(BLUE "[BAG] CAM measurement: %.3f|%d|%d\n" RESET, stamp_to_sec(img_i->header.stamp), cam_id, stereo_id);
+      sys->feed_measurement_camera(cam);
+      pub->publish_cam_images({cam_id, stereo_id});
+    }
   }
   return true;
 }
 
-bool find_stereo_pair(double meas_t, int cam_id, int &idx) {
+bool find_stereo_pair(double meas_t, int cam_id, uint64_t &pair_seq) {
   // Get the stereo pair's cam id
   int stereo_id = op->est->cam->stereo_pairs.at(cam_id);
+  auto &pair_map = cam_map.at(stereo_id);
 
-  // get lower bound of stereo pair's message
-  assert(!cam_map.at(stereo_id).empty());
-  auto pair_lb = cam_map.at(stereo_id).lower_bound(meas_t);
+  // drop entries that already left the window (their messages were processed)
+  while (!pair_map.empty() && pair_map.begin()->second < seq_front)
+    pair_map.erase(pair_map.begin());
+  if (pair_map.empty())
+    return false;
 
-  // check one previous message
-  if (distance(cam_map.at(stereo_id).begin(), pair_lb) > 0) {
-    // get lb and its prev measurement info
-    double t_1 = pair_lb->first;
-    int idx_1 = pair_lb->second;
+  // get the entry closest in time to the measurement
+  auto pair_lb = pair_map.lower_bound(meas_t);
+  if (pair_lb == pair_map.end())
     pair_lb--;
-    double t_0 = pair_lb->first;
-    int idx_0 = pair_lb->second;
-
-    // get the closest index
-    idx = abs(meas_t - t_0) < abs(meas_t - t_1) ? idx_0 : idx_1;
-  } else {
-    // this is the closest measurement you can get
-    idx = pair_lb->second;
+  else if (pair_lb != pair_map.begin()) {
+    auto prev_it = prev(pair_lb);
+    pair_lb = abs(meas_t - prev_it->first) < abs(meas_t - pair_lb->first) ? prev_it : pair_lb;
   }
+
+  // the pair must still be in the window (not processed yet)
+  if (pair_lb->second < seq_front)
+    return false;
 
   // filter too large time gap
-  auto stereo_img_c = msgs.at(idx).instantiate<CompressedImage>();
-  auto stereo_img_i = msgs.at(idx).instantiate<Image>();
-  if (stereo_img_c != nullptr)
-    return abs(stamp_to_sec(stereo_img_c->header.stamp) - meas_t) < 0.01;
-  else if (stereo_img_i != nullptr)
-    return abs(stamp_to_sec(stereo_img_i->header.stamp) - meas_t) < 0.01;
-  else {
-    PRINT4(RED "Image topic has unmatched message types!. Exiting.\n" RESET);
-    exit(EXIT_FAILURE);
-  }
+  pair_seq = pair_lb->second;
+  return abs(pair_lb->first - meas_t) < 0.01;
 }
 
 void system_setup(int argc, char **argv) {
@@ -467,14 +571,13 @@ void system_setup(int argc, char **argv) {
     exit(EXIT_FAILURE);
   }
 
-  // Load rosbag here, and find messages we can play
   // Parse multiple bag file paths separated by ":"
   PRINT2("[BAG] Parsing bag file paths\n");
   vector<string> bag_paths;
   string path_string = op->sys->path_bag;
   size_t path_start = 0;
   size_t path_end = path_string.find(":");
-  
+
   // Split the string by ":" and add each path (except the last one)
   while (path_end != string::npos) {
     string path = path_string.substr(path_start, path_end - path_start);
@@ -485,77 +588,104 @@ void system_setup(int argc, char **argv) {
     path_start = path_end + 1;
     path_end = path_string.find(":", path_start);
   }
-  
+
   // Add the last (or only) path
   string last_path = path_string.substr(path_start);
   if (!last_path.empty()) {
     bag_paths.push_back(last_path);
     PRINT2("[BAG] Found bag path: %s\n", last_path.c_str());
   }
-  
+
   PRINT2("[BAG] Total bag files to process: %d\n", (int)bag_paths.size());
-  
-  // Open all bag files and add them to the view, which handles synchronization and merging messages from multiple bags
-  PRINT2("[BAG] Reading bag files       ");
-#if ROS_AVAILABLE == 2
-  // rosbag2 has no lazy multi-bag view: read the messages of the topics we use into memory and merge them by time.
-  // Only the topics we use are kept so we do not hold the whole bag in memory.
-  rosbag2_storage::StorageFilter filter;
-  filter.topics.push_back(op->est->imu->topic);
+
+  // Only the topics we use are read from the bags
+  vector<string> topics;
+  topics.push_back(op->est->imu->topic);
   if (op->est->cam->enabled)
-    filter.topics.insert(filter.topics.end(), op->est->cam->topic.begin(), op->est->cam->topic.end());
+    topics.insert(topics.end(), op->est->cam->topic.begin(), op->est->cam->topic.end());
   if (op->est->wheel->enabled)
-    filter.topics.push_back(op->est->wheel->topic);
+    topics.push_back(op->est->wheel->topic);
   if (op->est->gps->enabled)
-    filter.topics.insert(filter.topics.end(), op->est->gps->topic.begin(), op->est->gps->topic.end());
+    topics.insert(topics.end(), op->est->gps->topic.begin(), op->est->gps->topic.end());
   if (op->est->lidar->enabled)
-    filter.topics.insert(filter.topics.end(), op->est->lidar->topic.begin(), op->est->lidar->topic.end());
+    topics.insert(topics.end(), op->est->lidar->topic.begin(), op->est->lidar->topic.end());
   if (op->est->vicon->enabled)
-    filter.topics.insert(filter.topics.end(), op->est->vicon->topic.begin(), op->est->vicon->topic.end());
+    topics.insert(topics.end(), op->est->vicon->topic.begin(), op->est->vicon->topic.end());
+
+  // Open all bags. They are merged by time and streamed while processing, so they do not
+  // need to fit in memory.
+  size_t n_msgs = 0;
+#if ROS_AVAILABLE == 2
+  rosbag2_storage::StorageFilter filter;
+  filter.topics = topics;
 
   int64_t begin_ns = numeric_limits<int64_t>::max(), end_ns = numeric_limits<int64_t>::min();
+  sources.resize(bag_paths.size());
   for (size_t i = 0; i < bag_paths.size(); i++) {
-    PRINT2("[BAG] Opening bag %d/%d: %s\n", (int)(i+1), (int)bag_paths.size(), bag_paths[i].c_str());
+    PRINT2("[BAG] Opening bag %d/%d: %s\n", (int)(i + 1), (int)bag_paths.size(), bag_paths[i].c_str());
     rosbag2_storage::StorageOptions storage_options;
     storage_options.uri = bag_paths[i];
-    rosbag2_cpp::Reader reader;
-    reader.open(storage_options, rosbag2_cpp::ConverterOptions{"cdr", "cdr"});
+    BagSource &src = sources[i];
+    src.reader = make_unique<rosbag2_cpp::Reader>();
+    src.reader->open(storage_options, rosbag2_cpp::ConverterOptions{"cdr", "cdr"});
 
     // time span of the whole bag (all topics), like rosbag::View::getBeginTime()/getEndTime()
-    const rosbag2_storage::BagMetadata &meta = reader.get_metadata();
+    const rosbag2_storage::BagMetadata &meta = src.reader->get_metadata();
     int64_t bag_begin_ns = chrono::duration_cast<chrono::nanoseconds>(meta.starting_time.time_since_epoch()).count();
     begin_ns = min(begin_ns, bag_begin_ns);
     end_ns = max(end_ns, bag_begin_ns + (int64_t)meta.duration.count());
 
     // topic -> message type, needed to emulate rosbag::MessageInstance::instantiate
-    map<string, string> topic_types;
-    for (const rosbag2_storage::TopicMetadata &topic : reader.get_all_topics_and_types())
-      topic_types[topic.name] = topic.type;
+    for (const rosbag2_storage::TopicMetadata &topic : src.reader->get_all_topics_and_types())
+      src.topic_types[topic.name] = topic.type;
+    for (const auto &info : meta.topics_with_message_count)
+      if (find(topics.begin(), topics.end(), info.topic_metadata.name) != topics.end())
+        n_msgs += info.message_count;
 
-    reader.set_filter(filter);
-    while (reader.has_next()) {
-      rosbag2_storage::SerializedBagMessageSharedPtr msg = reader.read_next();
-      view.emplace_back(*msg, topic_types.at(msg->topic_name));
-    }
+    src.reader->set_filter(filter);
   }
+  // The readers hold storage plugin objects, so like 'pub' above they must be released before
+  // class_loader unloads the plugins at exit. Registered after the readers opened, this runs
+  // before both the unload and the 'pub' handler, on every exit path.
+  std::atexit([]() { sources.clear(); });
   PRINT2("[BAG] Successfully opened %d bag file(s)\n", (int)bag_paths.size());
-
-  // merge the bags in time order (rosbag::View does this for us in ROS1)
-  stable_sort(view.begin(), view.end(), [](const MessageInstance &a, const MessageInstance &b) { return a.getTime() < b.getTime(); });
   bag_begin = rclcpp::Time(begin_ns);
   bag_end = rclcpp::Time(end_ns);
+
+  // bag run times
+  time_init = bag_begin + rclcpp::Duration::from_seconds(op->sys->bag_start);
+  op->sys->bag_durr = bag_end.seconds() < op->sys->bag_durr ? bag_end.seconds() : op->sys->bag_durr;
+  time_finish = (op->sys->bag_durr < 0) ? bag_end : time_init + rclcpp::Duration::from_seconds(op->sys->bag_durr);
+
+  // skip straight to the start time using the bag index, then prime the merge
+  for (BagSource &src : sources) {
+    if (op->sys->bag_start > 0)
+      src.reader->seek(time_init.nanoseconds());
+    src.next = src.reader->has_next() ? src.reader->read_next() : nullptr;
+  }
+
+  bool have_msgs = any_of(sources.begin(), sources.end(), [](const BagSource &src) { return src.next != nullptr; });
 #elif ROS_AVAILABLE == 1
   bags.resize(bag_paths.size());
   for (size_t i = 0; i < bag_paths.size(); i++) {
-    PRINT2("[BAG] Opening bag %d/%d: %s\n", (int)(i+1), (int)bag_paths.size(), bag_paths[i].c_str());
+    PRINT2("[BAG] Opening bag %d/%d: %s\n", (int)(i + 1), (int)bag_paths.size(), bag_paths[i].c_str());
     bags[i].open(bag_paths[i], rosbag::bagmode::Read);
-    view.addQuery(bags[i]);
+    view.addQuery(bags[i], rosbag::TopicQuery(topics));
   }
   PRINT2("[BAG] Successfully opened %d bag file(s)\n", (int)bags.size());
+  n_msgs = view.size();
+
+  // bag run times
+  time_init = view.getBeginTime() + ros::Duration(op->sys->bag_start);
+  op->sys->bag_durr = view.getEndTime().toSec() < op->sys->bag_durr ? view.getEndTime().toSec() : op->sys->bag_durr;
+  time_finish = (op->sys->bag_durr < 0) ? view.getEndTime() : time_init + ros::Duration(op->sys->bag_durr);
+
+  view_it = view.begin();
+  bool have_msgs = view_it != view.end();
 #endif
 
   // Check to make sure we have data to play
-  if (view.size() == 0) {
+  if (!have_msgs) {
     PRINT4(RED "\nNo messages to play on specified topics. Exiting.\n" RESET);
 #if ROS_AVAILABLE == 2
     rclcpp::shutdown();
@@ -564,131 +694,9 @@ void system_setup(int argc, char **argv) {
 #endif
     exit(EXIT_FAILURE);
   }
-  PRINT2("[BAG] Total messages in view: %d\n", (int)view.size());
+  PRINT2("[BAG] Total messages to process: %d\n", (int)n_msgs);
 
-  // load rosbag msg itr
-  msgs.reserve(view.size());
-  cam_map = vector<map<double, int>>(op->est->cam->max_n);
-  int cnt = 0;
-  for (const auto &msg : view) {
-#if ROS_AVAILABLE == 2
-    if (!rclcpp::ok())
-#elif ROS_AVAILABLE == 1
-    if (!ros::ok())
-#endif
-      break;
-    PRINT2("\b\b\b%02d%%", (int)((cnt++ * 100) / view.size()));
-
-    // check IMU ========================================
-    if (msg.getTopic() == op->est->imu->topic) {
-      assert(msg.instantiate<Imu>() != nullptr);
-      msgs.push_back(msg);
-      continue;
-    }
-
-    // check CAM ========================================
-    if (op->est->cam->enabled) {
-      bool keep_msg = false;
-      for (int id = 0; id < op->est->cam->max_n; id++) {
-        if (msg.getTopic() == op->est->cam->topic.at(id)) {
-          auto img_c = msg.instantiate<CompressedImage>();
-          auto img_i = msg.instantiate<Image>();
-          if (img_c != nullptr)
-            cam_map.at(id).insert({stamp_to_sec(img_c->header.stamp), msgs.size()});
-          else if (img_i != nullptr)
-            cam_map.at(id).insert({stamp_to_sec(img_i->header.stamp), msgs.size()});
-          else {
-            PRINT4(RED "\nImage topic has unmatched message types!. Exiting.\n" RESET);
-            exit(EXIT_FAILURE);
-          }
-          keep_msg = true;
-          break;
-        }
-      }
-      if (keep_msg) {
-        msgs.push_back(msg);
-        continue;
-      }
-    }
-
-    // check WHEEL ========================================
-    if (op->est->wheel->enabled && msg.getTopic() == op->est->wheel->topic) {
-      auto wheel_j = msg.instantiate<JointState>();
-      auto wheel_o = msg.instantiate<Odometry>();
-      assert(wheel_j != nullptr || wheel_o != nullptr);
-      if (wheel_j != nullptr && op->est->wheel->sub_topics.at(0) == wheel_j->name.at(0))
-        msgs.push_back(msg);
-      else if (wheel_o != nullptr)
-        msgs.push_back(msg);
-      else {
-        PRINT4(RED "Wheel type setting is wrong!\n" RESET);
-        std::exit(EXIT_FAILURE);
-      }
-      continue;
-    }
-
-    // check LiDAR ========================================
-    if (op->est->lidar->enabled) {
-      bool keep_msg = false;
-      for (int id = 0; id < op->est->lidar->max_n; id++) {
-        if (msg.getTopic() == op->est->lidar->topic.at(id)) {
-          assert(msg.instantiate<PointCloud2>() != nullptr);
-          keep_msg = true;
-          break;
-        }
-      }
-      if (keep_msg) {
-        msgs.push_back(msg);
-        continue;
-      }
-    }
-
-    // check GPS ========================================
-    if (op->est->gps->enabled) {
-      bool keep_msg = false;
-      for (int id = 0; id < op->est->gps->max_n; id++) {
-        if (msg.getTopic() == op->est->gps->topic.at(id)) {
-          auto ptr_fix = msg.instantiate<NavSatFix>();
-          auto ptr_geo = msg.instantiate<PoseStamped>();
-          assert(ptr_fix != nullptr || ptr_geo != nullptr);
-          keep_msg = true;
-          break;
-        }
-      }
-      if (keep_msg) {
-        msgs.push_back(msg);
-        continue;
-      }
-    }
-
-    // check VICON ========================================
-    if (op->est->vicon->enabled) {
-      bool keep_msg = false;
-      for (int id = 0; id < op->est->vicon->max_n; id++) {
-        if (msg.getTopic() == op->est->vicon->topic.at(id)) {
-          assert(msg.instantiate<PoseStamped>() != nullptr);
-          keep_msg = true;
-          break;
-        }
-      }
-      if (keep_msg) {
-        msgs.push_back(msg);
-        continue;
-      }
-    }
-  }
-  PRINT2("\n");
-
-  // bag run times
-#if ROS_AVAILABLE == 2
-  time_init = bag_begin + rclcpp::Duration::from_seconds(op->sys->bag_start);
-  op->sys->bag_durr = bag_end.seconds() < op->sys->bag_durr ? bag_end.seconds() : op->sys->bag_durr;
-  time_finish = (op->sys->bag_durr < 0) ? bag_end : time_init + rclcpp::Duration::from_seconds(op->sys->bag_durr);
-#elif ROS_AVAILABLE == 1
-  time_init = view.getBeginTime() + ros::Duration(op->sys->bag_start);
-  op->sys->bag_durr = view.getEndTime().toSec() < op->sys->bag_durr ? view.getEndTime().toSec() : op->sys->bag_durr;
-  time_finish = (op->sys->bag_durr < 0) ? view.getEndTime() : time_init + ros::Duration(op->sys->bag_durr);
-#endif
+  cam_map = vector<map<double, uint64_t>>(op->est->cam->max_n);
 
   // Create state log files
   save = make_shared<State_Logger>(op);

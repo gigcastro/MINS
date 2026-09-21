@@ -11,9 +11,9 @@ est:
   intr_error_thr_mlt: 0.5
   dt_extrapolation: 0.01
 
-  use_imu_res: false
-  use_imu_cov: false
-  use_pol_cov: true
+  use_imu_res: true
+  use_imu_cov: true
+  use_pol_cov: false
   dynamic_cloning: true
 
 # Slope of the polynomial pose interpolation error based on acceleration

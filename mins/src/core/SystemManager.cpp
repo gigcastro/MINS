@@ -200,7 +200,7 @@ void SystemManager::feed_measurement_gps(GPSData gps, bool isGeodetic) {
   // If we didn't set the datum yet, take the first gps measurement and use it as the datum
   if (gps_datum.hasNaN()) {
     gps_datum = gps.meas;
-    PRINT2(CYAN "[GPS]: Datum set: %.3f,%.3f,%.3f\n" RESET, gps.meas(0), gps.meas(1), gps.meas(2));
+    PRINT2(CYAN "[GPS]: Datum set: %.9f,%.9f,%.9f\n" RESET, gps.meas(0), gps.meas(1), gps.meas(2));
   }
 
   // Convert from a geodetic WGS-84 coordinated to East-North-Up

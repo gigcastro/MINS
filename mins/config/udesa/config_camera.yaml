@@ -6,7 +6,7 @@ cam:
   use_stereo: false # as stereo cameras do not have the same exact tstamp
   stereo_pair: [0, 1]
   do_calib_ext: true
-  do_calib_int: false
+  do_calib_int: true
   do_calib_dt: true
   n_pts: 1500
   fast: 30
