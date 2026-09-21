@@ -27,6 +27,8 @@ endif()
 
 find_package(rclcpp REQUIRED)
 find_package(rosbag2 REQUIRED COMPONENTS rmw_adapters message_filters rosbag2_storage_builtin)
+find_package(rosbag2_cpp REQUIRED)     # bag playback (run_bag.cpp)
+find_package(rosbag2_storage REQUIRED)
 find_package(tf2_ros REQUIRED COMPONENTS tf2_cpp)  # Replaces tf
 
 # Find message packages (geometry_msgs, sensor_msgs, etc.)
@@ -160,8 +162,12 @@ target_link_libraries(simulation mins_lib)
 add_executable(subscribe src/run_subscribe.cpp)
 target_link_libraries(subscribe mins_lib)
 
+add_executable(bag src/run_bag.cpp)
+ament_target_dependencies(bag rosbag2_cpp rosbag2_storage)
+target_link_libraries(bag mins_lib)
+
 # Install executables
-install(TARGETS subscribe simulation DESTINATION lib/${PROJECT_NAME})
+install(TARGETS subscribe simulation bag DESTINATION lib/${PROJECT_NAME})
 
 install(DIRECTORY launch/ DESTINATION share/${PROJECT_NAME}/launch/)
 install(DIRECTORY config/ DESTINATION share/${PROJECT_NAME}/config/)
