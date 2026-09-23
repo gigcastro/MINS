@@ -176,7 +176,7 @@ void ROSSubscriber::callback_gnss(const NavSatFixConstPtr &msg, int gps_id) {
   // In case GNSS message does not have GNSS noise value or we want to overwrite it, use preset values
   data.noise(0) <= 0.0 || op->gps->overwrite_noise ? data.noise(0) = op->gps->noise : double();
   data.noise(1) <= 0.0 || op->gps->overwrite_noise ? data.noise(1) = op->gps->noise : double();
-  data.noise(2) <= 0.0 || op->gps->overwrite_noise ? data.noise(2) = op->gps->noise * 2 : double();
+  data.noise(2) <= 0.0 || op->gps->overwrite_noise ? data.noise(2) = op->gps->noise_z : double();
   sys->feed_measurement_gps(data, true);
   pub->publish_gps(data, true);
   PRINT1(YELLOW "[SUB] GPS measurement: %.3f|%d|" RESET, data.time, data.id);

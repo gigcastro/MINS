@@ -80,6 +80,9 @@ struct OptionsGPS {
   bool overwrite_noise = false;
   double noise = 0.1;
 
+  /// Vertical (Up) noise standard deviation; defaults to 2 * noise when not set
+  double noise_z = -1;
+
 private:
   void load_i(const std::shared_ptr<ov_core::YamlParser> &parser, int i);
   void print_i(int i);

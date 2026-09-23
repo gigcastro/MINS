@@ -248,6 +248,7 @@ int main(int argc, char **argv) {
         pub->visualize();
         sim_viz->publish_groundtruth();
         op->sys->save_trajectory ? save->save_trajectory_to_file(sys) : void();
+        op->sys->save_trajectory ? save->save_calib_evolution_to_file(sys) : void();
       }
       continue;
     }
@@ -297,7 +298,7 @@ int main(int argc, char **argv) {
           // In case GNSS message does not have GNSS noise value or we want to overwrite it, use preset values
           data.noise(0) <= 0.0 || op->est->gps->overwrite_noise ? data.noise(0) = op->est->gps->noise : double();
           data.noise(1) <= 0.0 || op->est->gps->overwrite_noise ? data.noise(1) = op->est->gps->noise : double();
-          data.noise(2) <= 0.0 || op->est->gps->overwrite_noise ? data.noise(2) = op->est->gps->noise * 2 : double();
+          data.noise(2) <= 0.0 || op->est->gps->overwrite_noise ? data.noise(2) = op->est->gps->noise_z : double();
           PRINT1(CYAN "[BAG] GPS measurement: %.3f|%d|" RESET, data.time, data.id);
           PRINT1(CYAN "%.3f,%.3f,%.3f|%.3f,%.3f,%.3f\n" RESET, data.meas(0), data.meas(1), data.meas(2), data.noise(0), data.noise(1), data.noise(2));
           sys->feed_measurement_gps(data, ptr_fix != nullptr);
@@ -354,6 +355,7 @@ int main(int argc, char **argv) {
 
   // Final visualization
   sys->visualize_final();
+  op->sys->save_trajectory ? save->save_calib_to_file(sys) : void();
   op->sys->save_timing ? save->save_timing_to_file(sys->tc_sensors->get_total_sum()) : void();
   save->check_files();
 

@@ -3,16 +3,20 @@
 gps:
   enabled: true
   max_n: 2
-  do_calib_ext: true
-  do_calib_dt: true
+  do_calib_ext: false
+  do_calib_dt: false
   init_distance: 5.0
   init_closed_form: false
   init_cov_dt: 5e-1
   init_cov_ex: 5e-2
   init_cov_inflation: 0.01
   chi2_mult: 9999
-  overwrite_noise: true
+  overwrite_noise: false
   noise: 0.05
+  # The GNSS altitude is much worse than the horizontal fix: keep the vertical
+  # solution owned by LiDAR/camera by giving the Up axis a weak weight.
+  # Without noise_z the vertical std defaults to 2 * noise.
+  #noise_z: 0.5
 
 # Antenna assignment measured from the data (sanisidro_0): the ENU vector between the
 # two fixes on straight segments is (-3.3, -0.3, -1.0) m in the body frame, so

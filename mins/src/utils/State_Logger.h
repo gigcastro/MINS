@@ -221,6 +221,23 @@ public:
       }
       of_traj.setf(ios::fixed, ios::floatfield);
       of_traj << "# timestamp(s) tx ty tz qx qy qz qw Pr11 Pr12 Pr13 Pr22 Pr23 Pr33 Pt11 Pt12 Pt13 Pt22 Pt23 Pt33\n";
+
+      // calibration evolution: per-update sensor extrinsics, next to the trajectory.
+      // Per sensor: timeoffset, then the TF imu -> sensor transform (q Hamilton
+      // sensor-to-IMU rotation, p sensor origin in the IMU frame).
+      fs::path traj_path(op->sys->path_trajectory);
+      path_calib = (traj_path.parent_path() / (traj_path.stem().string() + "_calib.txt")).string();
+      fs::exists(path_calib) && fs::remove(path_calib);
+      of_calib.open(path_calib);
+      if (!of_calib.is_open()) {
+        PRINT4(RED "Cannot open calibration recording file: %s\n" RESET, path_calib.c_str());
+        exit(EXIT_FAILURE);
+      }
+      of_calib.setf(ios::fixed, ios::floatfield);
+      of_calib << "# timestamp(s)";
+      for (const string &s : calib_sensor_names(op))
+        of_calib << " " << s << "_dt " << s << "_qx " << s << "_qy " << s << "_qz " << s << "_qw " << s << "_px " << s << "_py " << s << "_pz";
+      of_calib << "\n";
     }
 
     // Time
@@ -339,6 +356,112 @@ public:
     of_traj << P(3, 3) << " " << P(3, 4) << " " << P(3, 5) << " " << P(4, 4) << " " << P(4, 5) << " " << P(5, 5) << endl;
   }
 
+  /// Names of the sensors whose calibration is logged, in the column order of the calib file
+  static vector<string> calib_sensor_names(const shared_ptr<Options> &op) {
+    vector<string> names;
+    if (op->est->cam->enabled)
+      for (int i = 0; i < op->est->cam->max_n; i++)
+        names.push_back("cam" + to_string(i));
+    if (op->est->gps->enabled)
+      for (int i = 0; i < op->est->gps->max_n; i++)
+        names.push_back("gps" + to_string(i));
+    if (op->est->lidar->enabled)
+      for (int i = 0; i < op->est->lidar->max_n; i++)
+        names.push_back("lidar" + to_string(i));
+    if (op->est->vicon->enabled)
+      for (int i = 0; i < op->est->vicon->max_n; i++)
+        names.push_back("vicon" + to_string(i));
+    if (op->est->wheel->enabled)
+      names.push_back("wheel");
+    return names;
+  }
+
+  /// Append the current sensor calibration (timeoffsets and extrinsics in the IMU frame) to the
+  /// calibration evolution file, one row per call (called at the trajectory logging cadence)
+  void save_calib_evolution_to_file(shared_ptr<SystemManager> sys) {
+    if (!of_calib.is_open())
+      return;
+    cnt_calib++;
+    auto st = sys->state;
+    of_calib.precision(6);
+    of_calib << st->time;
+    of_calib.precision(9);
+    auto put_pose = [&](const shared_ptr<PoseJPL> &ext, double dt) {
+      Vector4d q = ext->quat();                          // JPL q_ItoS == Hamilton q_StoI
+      Vector3d p = -ext->Rot().transpose() * ext->pos(); // p_SinI
+      of_calib << " " << dt << " " << q(0) << " " << q(1) << " " << q(2) << " " << q(3);
+      of_calib << " " << p(0) << " " << p(1) << " " << p(2);
+    };
+    if (st->op->cam->enabled)
+      for (int i = 0; i < st->op->cam->max_n; i++)
+        put_pose(st->cam_extrinsic.at(i), st->cam_dt.at(i)->value()(0));
+    if (st->op->gps->enabled) {
+      for (int i = 0; i < st->op->gps->max_n; i++) {
+        Vector3d p = st->gps_extrinsic.at(i)->value(); // p_GinI
+        of_calib << " " << st->gps_dt.at(i)->value()(0) << " 0 0 0 1";
+        of_calib << " " << p(0) << " " << p(1) << " " << p(2);
+      }
+    }
+    if (st->op->lidar->enabled)
+      for (int i = 0; i < st->op->lidar->max_n; i++)
+        put_pose(st->lidar_extrinsic.at(i), st->lidar_dt.at(i)->value()(0));
+    if (st->op->vicon->enabled)
+      for (int i = 0; i < st->op->vicon->max_n; i++)
+        put_pose(st->vicon_extrinsic.at(i), st->vicon_dt.at(i)->value()(0));
+    if (st->op->wheel->enabled)
+      put_pose(st->wheel_extrinsic, st->wheel_dt->value()(0));
+    of_calib << endl;
+  }
+
+  /// Save the final sensor calibration (timeoffsets and extrinsics in the IMU frame) to a yaml
+  /// file next to the trajectory, so the trajectory can be shipped with its TF tree. q [x,y,z,w]
+  /// is the Hamilton sensor-to-IMU rotation (same values as the JPL IMU-to-sensor quaternion) and
+  /// p the sensor origin in the IMU frame: together they are the ROS TF 'imu' -> sensor transform.
+  void save_calib_to_file(shared_ptr<SystemManager> sys) {
+    fs::path traj(op->sys->path_trajectory);
+    string path = (traj.parent_path() / (traj.stem().string() + "_calib.yaml")).string();
+    ofstream of(path);
+    if (!of.is_open()) {
+      PRINT4(RED "Cannot open calibration recording file: %s\n" RESET, path.c_str());
+      return;
+    }
+    of.setf(ios::fixed, ios::floatfield);
+    of.precision(9);
+    auto st = sys->state;
+    of << "# Final sensor calibration. q [x,y,z,w]: Hamilton sensor-to-IMU rotation, p [x,y,z]:\n";
+    of << "# sensor origin in the IMU frame (together the ROS TF imu -> sensor transform).\n";
+    of << "state_time: " << st->time << "\n";
+    auto write_pose = [&](const string &name, const shared_ptr<PoseJPL> &ext, double dt) {
+      Vector4d q = ext->quat();                          // JPL q_ItoS == Hamilton q_StoI
+      Vector3d p = -ext->Rot().transpose() * ext->pos(); // p_SinI
+      of << name << ":\n";
+      of << "  timeoffset: " << dt << "\n";
+      of << "  q: [" << q(0) << ", " << q(1) << ", " << q(2) << ", " << q(3) << "]\n";
+      of << "  p: [" << p(0) << ", " << p(1) << ", " << p(2) << "]\n";
+    };
+    if (st->op->cam->enabled)
+      for (int i = 0; i < st->op->cam->max_n; i++)
+        write_pose("cam" + to_string(i), st->cam_extrinsic.at(i), st->cam_dt.at(i)->value()(0));
+    if (st->op->gps->enabled) {
+      for (int i = 0; i < st->op->gps->max_n; i++) {
+        Vector3d p = st->gps_extrinsic.at(i)->value(); // p_GinI
+        of << "gps" << i << ":\n";
+        of << "  timeoffset: " << st->gps_dt.at(i)->value()(0) << "\n";
+        of << "  q: [0, 0, 0, 1]\n";
+        of << "  p: [" << p(0) << ", " << p(1) << ", " << p(2) << "]\n";
+      }
+    }
+    if (st->op->lidar->enabled)
+      for (int i = 0; i < st->op->lidar->max_n; i++)
+        write_pose("lidar" + to_string(i), st->lidar_extrinsic.at(i), st->lidar_dt.at(i)->value()(0));
+    if (st->op->vicon->enabled)
+      for (int i = 0; i < st->op->vicon->max_n; i++)
+        write_pose("vicon" + to_string(i), st->vicon_extrinsic.at(i), st->vicon_dt.at(i)->value()(0));
+    if (st->op->wheel->enabled)
+      write_pose("wheel", st->wheel_extrinsic, st->wheel_dt->value()(0));
+    PRINT2("[SAVE] Saved final calibration to %s\n", path.c_str());
+  }
+
   /// Save given time to a file
   void save_timing_to_file(double t) {
     cnt_time++;
@@ -362,6 +485,11 @@ public:
     // Trajectory
     if (op->sys->save_trajectory && (total_t < 0 || cnt_traj == 0)) {
       fs::exists(op->sys->path_trajectory.c_str()) && fs::remove(op->sys->path_trajectory.c_str());
+    }
+
+    // Calibration evolution
+    if (op->sys->save_trajectory && (total_t < 0 || cnt_calib == 0)) {
+      fs::exists(path_calib) && fs::remove(path_calib);
     }
 
     // Time
@@ -457,13 +585,15 @@ private:
   unordered_map<string, shared_ptr<ofstream>> of_est, of_std, of_gt;
   unordered_map<string, string> filepath_est, filepath_std, filepath_gth;
 
-  /// file handlers of time and trajectory
-  ofstream of_time, of_traj;
+  /// file handlers of time, trajectory, and calibration evolution
+  ofstream of_time, of_traj, of_calib;
+  string path_calib;
 
   /// counter of each logging function
   int cnt_state = 0;
   int cnt_traj = 0;
   int cnt_time = 0;
+  int cnt_calib = 0;
 
   /// Saved timing
   double total_t = -1;

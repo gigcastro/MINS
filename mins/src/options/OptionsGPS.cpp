@@ -42,6 +42,8 @@ void mins::OptionsGPS::load(const std::shared_ptr<ov_core::YamlParser> &parser) 
     parser->parse_external(f, "gps", "init_cov_inflation", init_cov_inflation);
     parser->parse_external(f, "gps", "overwrite_noise", overwrite_noise);
     parser->parse_external(f, "gps", "noise", noise);
+    noise_z = 2 * noise;
+    parser->parse_external(f, "gps", "noise_z", noise_z, false);
     for (int i = 0; i < max_n; i++) {
       load_i(parser, i);
     }
@@ -82,6 +84,7 @@ void mins::OptionsGPS::print() {
   PRINT1("\t- init_distance: %.2f\n", init_distance);
   PRINT1("\t- overwrite_noise: %s\n", overwrite_noise ? "true" : "false");
   PRINT1("\t- noise: %.2f\n", noise);
+  PRINT1("\t- noise_z: %.2f\n", noise_z);
   for (int i = 0; i < max_n; i++) {
     print_i(i);
   }
