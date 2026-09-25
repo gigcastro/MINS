@@ -12,13 +12,14 @@ init:
   imu_wheel_thresh: 0.1   # smoothness thr. for the IMU-wheel initializer (matches kaist)
   imu_only_init: false    # false => use the IMU+wheel initializer, which supports DYNAMIC
                           #          (already-moving) init. Requires wheel.enabled: true.
+                          # With wheel.enabled: false (current) it falls back to IMU-only.
   # MUST stay false for this rig. 'true' hard-codes gravity_in_I0 = (0,0,+gravity_mag),
   # i.e. it asserts the IMU is level with +z UP. Our IMU reads a=(-0.31,0.06,-9.79) at
   # rest => +z points DOWN (and 1.85 deg off vertical), so 'true' would inject a 180 deg
   # orientation error. With 'false' the initializer solves for the gravity direction and
   # any mounting orientation is handled exactly.
   imu_gravity_aligned: false
-  use_gt: false
-  use_gt_gnss: false
-  use_gt_lidar: false
-  cov_size: 1e-2
+  use_gt: false           # initialize from ground truth (sys.path_gt); simulation/debug only
+  use_gt_gnss: false      # initialize the GNSS ENU-to-world transform from GT (simulation only)
+  use_gt_lidar: false     # initialize the lidar map from GT (simulation only)
+  cov_size: 1e-2          # initial (diagonal) variance of the IMU state (ori, pos, vel, biases)

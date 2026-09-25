@@ -1,20 +1,23 @@
 %YAML:1.0 # need to specify the file type at the top!
 
 est:
-  gravity_mag: 9.81
-  clone_freq: 20
-  window_size: 1.0
-  intr_order: 3
-  intr_error_mlt: 3
-  intr_error_ori_thr: 0.007
-  intr_error_pos_thr: 0.003
-  intr_error_thr_mlt: 0.5
-  dt_extrapolation: 0.01
+  gravity_mag: 9.7969     # gravity magnitude [m/s^2]. Local value at San Isidro, Buenos Aires
+                          # is ~9.797 (https://www.sensorsone.com/local-gravity-calculator/)
+  clone_freq: 20          # nominal rate of IMU pose clones in the sliding window [Hz]
+  window_size: 1.0        # sliding-window length [s] (#clones = window_size * clone_freq + 1)
+  intr_order: 3           # order of the pose polynomial used to interpolate between clones (odd)
+  intr_error_mlt: 3       # multiplier of the interpolation-error covariance added to measurements
+  intr_error_ori_thr: 0.007 # dynamic cloning - raise clone Hz if predicted orientation interp.
+                          #   error exceeds this [rad]
+  intr_error_pos_thr: 0.003 # same for position [m]
+  intr_error_thr_mlt: 0.5 # scales both thresholds above
+  dt_extrapolation: 0.01  # max time a measurement may fall outside the clone window and still be
+                          #   used (by extrapolation) [s]
 
-  use_imu_res: true
-  use_imu_cov: true
-  use_pol_cov: false
-  dynamic_cloning: true
+  use_imu_res: true       # interpolate poses between clones with IMU integration (false = polynomial)
+  use_imu_cov: true       # camera only - add IMU-preintegration covariance for interpolated poses
+  use_pol_cov: false      # camera only - add polynomial-fit covariance instead (mutually exclusive)
+  dynamic_cloning: true   # adapt clone Hz to motion using the intr_ori/intr_pos tables below
 
 # Slope of the polynomial pose interpolation error based on acceleration
 # order: 1 3 5 7 9

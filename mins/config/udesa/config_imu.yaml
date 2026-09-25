@@ -1,5 +1,9 @@
 %YAML:1.0 # need to specify the file type at the top!
 
+# Continuous-time noise densities. If these come from a static Allan-variance/datasheet,
+# the effective in-car noise is larger (engine/road vibration); values that are too small
+# make the filter over-trust IMU propagation (incl. the unstable vertical channel) and
+# react slowly to aiding measurements. Inflating them 2-10x is common practice on vehicles.
 imu:
   accel_noise: 0.0010071834983987852  # [ m / s^2 / sqrt(Hz) ]   ( accel "white noise" )
   accel_bias: 1.3855255169196156e-05   # [ m / s^3 / sqrt(Hz) ].  ( accel bias diffusion )

@@ -1,24 +1,30 @@
 %YAML:1.0 # need to specify the file type at the top!
 
+# Wheel odometry (disabled). MINS expects sensor_msgs/JointState; the UdeSA bags carry
+# /vehicle/wheel_speed_report (dbw_mkz, ~100 Hz) and /vehicle/twist, which would need a
+# converter. A 3D type adds a non-holonomic constraint (no lateral/vertical body velocity)
+# that strongly limits vertical drift on slopes.
 wheel:
   enabled: false
   type: "Wheel3DAng" #  Wheel2DAng, Wheel2DLin, Wheel2DCen, Wheel3DAng, Wheel3DLin, Wheel3DCen
-  do_calib_dt: false
-  do_calib_ext: false
-  do_calib_int: false
-  noise_w: 0.2
-  noise_v: 0.5
-  noise_p: 0.1
-  init_cov_dt: 1e-4
-  init_cov_ex_o: 1e-4
-  init_cov_ex_p: 1e-3
-  init_cov_in_b: 1e-3
-  init_cov_in_r: 1e-3
-  chi2_mult: 15
-  timeoffset: 0.0
-  intrinsics: [0.33, 0.33, 1.82]
-  reuse_of_information: false
-  T_imu_wheel:
+                     #  2D/3D = planar or full motion model; Ang = wheel angular rates,
+                     #  Lin = wheel linear speeds, Cen = body-center linear/angular speed
+  do_calib_dt: false      # estimate wheel-IMU time offset online
+  do_calib_ext: false     # estimate wheel-IMU extrinsic online
+  do_calib_int: false     # estimate wheel radii + base length online (Ang types only)
+  noise_w: 0.2            # measurement noise of the angular velocity
+  noise_v: 0.5            # measurement noise of the linear velocity
+  noise_p: 0.1            # noise of the unmeasured (out-of-plane / lateral) motion in 3D types
+  init_cov_dt: 1e-4       # initial variance of the time offset [s^2]
+  init_cov_ex_o: 1e-4     # initial variance of the extrinsic rotation [rad^2]
+  init_cov_ex_p: 1e-3     # initial variance of the extrinsic translation [m^2]
+  init_cov_in_b: 1e-3     # initial variance of the base length [m^2]
+  init_cov_in_r: 1e-3     # initial variance of the wheel radii [m^2]
+  chi2_mult: 15           # multiplier of the 95% chi2 gating threshold
+  timeoffset: 0.0         # initial time offset t_imu = t_wheel + timeoffset [s]
+  intrinsics: [0.33, 0.33, 1.82] # left radius, right radius, base length [m]
+  reuse_of_information: false # reuse wheel data already used in the IMU-wheel initializer
+  T_imu_wheel:            # R_OtoI and p_OinI (wheel-odometry frame in the IMU frame)
     - [1.0, 0.0, 0.0, 0.0]
     - [0.0, 1.0, 0.0, 0.0]
     - [0.0, 0.0, 1.0, 0.6]
