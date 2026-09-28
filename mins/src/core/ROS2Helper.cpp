@@ -25,6 +25,7 @@
  * along with this program. If not, see <https://www.gnu.org/licenses/>.
  */
 
+#include <cmath>
 #include "ROS2Helper.h"
 #include "update/lidar/PointCloud2Convert.h"
 #include "options/OptionsCamera.h"
@@ -152,9 +153,9 @@ GPSData ROS2Helper::NavSatFix2Data(const sensor_msgs::msg::NavSatFix::SharedPtr 
   data.meas(0) = msg->latitude;
   data.meas(1) = msg->longitude;
   data.meas(2) = msg->altitude;
-  data.noise(0) = msg->position_covariance.at(0);
-  data.noise(1) = msg->position_covariance.at(4);
-  data.noise(2) = msg->position_covariance.at(8);
+  data.noise(0) = std::sqrt(msg->position_covariance.at(0)); // NavSatFix carries variances, GPSData wants std
+  data.noise(1) = std::sqrt(msg->position_covariance.at(4)); // NavSatFix carries variances, GPSData wants std
+  data.noise(2) = std::sqrt(msg->position_covariance.at(8)); // NavSatFix carries variances, GPSData wants std
   return data;
 }
 
@@ -165,9 +166,9 @@ GPSData ROS2Helper::NavSatFix2Data(const sensor_msgs::msg::NavSatFix::ConstShare
   data.meas(0) = msg->latitude;
   data.meas(1) = msg->longitude;
   data.meas(2) = msg->altitude;
-  data.noise(0) = msg->position_covariance.at(0);
-  data.noise(1) = msg->position_covariance.at(4);
-  data.noise(2) = msg->position_covariance.at(8);
+  data.noise(0) = std::sqrt(msg->position_covariance.at(0)); // NavSatFix carries variances, GPSData wants std
+  data.noise(1) = std::sqrt(msg->position_covariance.at(4)); // NavSatFix carries variances, GPSData wants std
+  data.noise(2) = std::sqrt(msg->position_covariance.at(8)); // NavSatFix carries variances, GPSData wants std
   return data;
 }
 

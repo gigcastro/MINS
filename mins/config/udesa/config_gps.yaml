@@ -5,16 +5,25 @@ gps:
   max_n: 2                # number of receivers (gps0..gps{max_n-1})
   do_calib_ext: false     # estimate antenna lever arms online
   do_calib_dt: false      # estimate GNSS-IMU time offsets online
-  init_distance: 5.0      # path length to travel before aligning the world frame to ENU [m]
+  # 50 m instead of 5 m: the Horn yaw from 5 m of travel was 4.9 deg off on loop_sanisidro
+  # split_01, which put every later fix outside the chi2 gate (34 m rms error, GNSS unused).
+  # With 50 m the heading error is 0.4 deg.
+  init_distance: 50.0     # path length to travel before aligning the world frame to ENU [m]
   init_closed_form: false # false = yaw from Horn method, true = 4-DOF RANSAC solution
   init_cov_dt: 5e-1       # initial variance of the time offset [s^2] (used if do_calib_dt)
   init_cov_ex: 5e-2       # initial variance of the lever arm [m^2] (used if do_calib_ext)
   init_cov_inflation: 1.0 # after the ENU alignment the WHOLE state covariance is multiplied by
                           # this. <1 deflates it and makes the filter more confident in every
                           # std (pos, ori, biases, calib); upstream configs use 2.0
-  chi2_mult: 5         # multiplier of the 95% chi2 gate. 9999 = never reject, which also disables
+  # Never reject: the filter covariance is over-confident (vision/lidar drift outruns it), so
+  # any gate ends up rejecting the true fixes and the drift is never corrected. Measured on
+  # 5 min of loop_sanisidro split_01 (RTK fixes, 2-4 cm), rms error vs the RTK track:
+  #   gate x5: 74 m / z -27 m (0 fixes accepted), x50: 11.6 m / z -31 m (half accepted),
+  #   none:    2.8 m / z 0.8 m (all accepted).
+  # Revisit (or inflate the IMU noise so a gate becomes consistent) for non-RTK recordings.
+  chi2_mult: 9999      # multiplier of the 95% chi2 gate. 9999 = never reject, which also disables
                           # the built-in fallback (3D rejected -> retry with horizontal only)
-  overwrite_noise: true  # false = use the NavSatFix covariance; `noise`/`noise_z` below are only a
+  overwrite_noise: false  # false = use the NavSatFix covariance; `noise`/`noise_z` below are only a
                           # fallback for fixes with covariance <= 0. true = always use noise/noise_z
   noise: 0.05             # horizontal std [m] (see overwrite_noise)
   # The GNSS altitude is much worse than the horizontal fix: keep the vertical
@@ -22,10 +31,10 @@ gps:
   # Without noise_z the vertical std defaults to 2 * noise.
   # NOTE: NOT in effect while overwrite_noise: false. Both u-blox fix topics carry a
   # DIAGONAL_KNOWN covariance (100% of the fixes in sanisidro_0_restamp_stereo), so MINS uses
-  # the per-fix values, and (NavSatFix2Data bug) takes the variance as the std: vAcc 0.42 m
-  # (median) becomes sigma_z = 0.18 m. The Up axis is currently weighted STRONGLY, not weakly.
-  # To make noise/noise_z effective set overwrite_noise: true AND raise `noise` (0.05 m is
-  # far too tight for a standalone fix; horizontal residuals are ~1-3 m).
+  # the per-fix values. NavSatFix2Data (ROSHelper/ROS2Helper) used to take the variance as
+  # the std (vAcc 0.42 m became sigma_z = 0.18 m; on RTK fixes sigma 0.02 m became 0.0004 m
+  # and the filter diverged within a minute); it now takes the square root.
+  # With standalone fixes raise `noise` (0.05 m is far too tight; residuals are ~1-3 m).
   noise_z: 0.5            # vertical std [m] (see overwrite_noise)
 
 # Antenna assignment measured from the data (sanisidro_0): the ENU vector between the
