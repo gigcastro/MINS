@@ -70,6 +70,11 @@ struct OptionsGPS {
   /// Distance threshold for initializing GPS initialization
   double init_distance = 30;
 
+  /// Minimum number of GNSS fixes the ENU alignment may be computed from. The delayed
+  /// initialization halves the fix set every time its chi2 check fails; without a floor it
+  /// ends up aligning the yaw from 3 fixes and the filter diverges right after.
+  int init_min_meas = 20;
+
   /// Boolean to get the initial guess in closed form solution
   bool init_closed_form = true;
 
@@ -82,6 +87,11 @@ struct OptionsGPS {
 
   /// Vertical (Up) noise standard deviation; defaults to 2 * noise when not set
   double noise_z = -1;
+
+  /// Optional per-update log file (empty = disabled). One row per GNSS update attempt:
+  /// time, id, ENU residual, measurement std, prior (predicted antenna position) std,
+  /// chi2, threshold, accepted (3 = 3D, 2 = horizontal only, 0 = rejected), ENU meas.
+  std::string log_path = "";
 
 private:
   void load_i(const std::shared_ptr<ov_core::YamlParser> &parser, int i);

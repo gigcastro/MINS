@@ -20,6 +20,7 @@
 
 #ifndef MINS_UPDATERGPS_H
 #define MINS_UPDATERGPS_H
+#include <fstream>
 
 #include <Eigen/Eigen>
 #include <deque>
@@ -83,6 +84,9 @@ protected:
 
   /// State
   shared_ptr<State> state;
+
+  /// Per-update log (gps.log_path)
+  std::ofstream gps_log;
 };
 } // namespace mins
 #endif // MINS_UPDATERGPS_H

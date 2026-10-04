@@ -36,6 +36,7 @@ void mins::OptionsGPS::load(const std::shared_ptr<ov_core::YamlParser> &parser) 
     parser->parse_external(f, "gps", "do_calib_ext", do_calib_ext);
     parser->parse_external(f, "gps", "do_calib_dt", do_calib_dt);
     parser->parse_external(f, "gps", "init_distance", init_distance);
+    parser->parse_external(f, "gps", "init_min_meas", init_min_meas, false);
     parser->parse_external(f, "gps", "init_closed_form", init_closed_form);
     parser->parse_external(f, "gps", "init_cov_dt", init_cov_dt);
     parser->parse_external(f, "gps", "init_cov_ex", init_cov_ex);
@@ -44,6 +45,7 @@ void mins::OptionsGPS::load(const std::shared_ptr<ov_core::YamlParser> &parser) 
     parser->parse_external(f, "gps", "noise", noise);
     noise_z = 2 * noise;
     parser->parse_external(f, "gps", "noise_z", noise_z, false);
+    parser->parse_external(f, "gps", "log_path", log_path, false);
     for (int i = 0; i < max_n; i++) {
       load_i(parser, i);
     }
@@ -82,9 +84,11 @@ void mins::OptionsGPS::print() {
   PRINT1("\t- init_cov_ex: %.6f\n", init_cov_ex);
   PRINT1("\t- init_cov_inflation: %.6f\n", init_cov_inflation);
   PRINT1("\t- init_distance: %.2f\n", init_distance);
+  PRINT1("\t- init_min_meas: %d\n", init_min_meas);
   PRINT1("\t- overwrite_noise: %s\n", overwrite_noise ? "true" : "false");
   PRINT1("\t- noise: %.2f\n", noise);
   PRINT1("\t- noise_z: %.2f\n", noise_z);
+  PRINT1("\t- log_path: %s\n", log_path.empty() ? "(disabled)" : log_path.c_str());
   for (int i = 0; i < max_n; i++) {
     print_i(i);
   }

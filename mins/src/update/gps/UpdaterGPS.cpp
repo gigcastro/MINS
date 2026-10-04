@@ -19,6 +19,7 @@
  */
 
 #include "UpdaterGPS.h"
+#include <algorithm>
 #include "GPSTypes.h"
 #include "MathGPS.h"
 #include "PoseJPL_4DOF.h"
@@ -34,6 +35,7 @@
 #include "update/UpdaterStatistics.h"
 #include "utils/Jabdongsani.h"
 #include "utils/Print_Logger.h"
+#include "utils/chi_square.h"
 #include "utils/colors.h"
 
 using namespace mins;
@@ -149,24 +151,53 @@ bool UpdaterGPS::update(GPSData data) {
   }
 
   //=========================================================================
+  // Optional per-update log: how the filter weighs this fix (prior vs measurement std)
+  //=========================================================================
+  bool do_log = !state->op->gps->log_path.empty();
+  double log_chi = -1, log_thr = -1;
+  Vector3d log_prior = Vector3d::Zero(), log_res = res, log_sig = R.diagonal().cwiseSqrt();
+  if (do_log) {
+    MatrixXd P = StateHelper::get_marginal_covariance(state, Hx_order);
+    MatrixXd HPH = H * P * H.transpose();
+    MatrixXd S = HPH + R;
+    log_chi = res.transpose() * S.inverse() * res;
+    log_thr = state->op->gps->chi2_mult * chi_square_quantile(0.95, 3);
+    log_prior = HPH.diagonal().cwiseSqrt();
+  }
+
+  //=========================================================================
   // Update
   //=========================================================================
   // Do Chi check and update!
+  int accepted = 0;
   if (Chi.at(data.id)->Chi2Check(state, Hx_order, H, res, R)) {
     StateHelper::EKFUpdate(state, Hx_order, H, res, R, "GPS");
-    return true;
+    accepted = 3;
+  } else {
+    // If failed, try 2d without z measurement which is often bad
+    H = H.block(0, 0, 2, H.cols()).eval();
+    R = R.block(0, 0, 2, 2).eval();
+    res = res.block(0, 0, 2, 1).eval();
+    if (Chi.at(data.id)->Chi2Check(state, Hx_order, H, res, R)) {
+      StateHelper::EKFUpdate(state, Hx_order, H, res, R, "GPS");
+      accepted = 2;
+    }
   }
 
-  // If failed, try 2d without z measurement which is often bad
-  H = H.block(0, 0, 2, H.cols()).eval();
-  R = R.block(0, 0, 2, 2).eval();
-  res = res.block(0, 0, 2, 1).eval();
-  if (Chi.at(data.id)->Chi2Check(state, Hx_order, H, res, R)) {
-    StateHelper::EKFUpdate(state, Hx_order, H, res, R, "GPS");
-    return true;
+  if (do_log) {
+    if (!gps_log.is_open()) {
+      gps_log.open(state->op->gps->log_path, std::ios::out | std::ios::trunc);
+      gps_log << "# time id res_e res_n res_u sig_e sig_n sig_u prior_e prior_n prior_u chi2 thr accepted meas_e meas_n meas_u\n";
+    }
+    gps_log.precision(6);
+    gps_log << std::fixed << data.time << " " << data.id << " ";
+    gps_log << log_res(0) << " " << log_res(1) << " " << log_res(2) << " ";
+    gps_log << log_sig(0) << " " << log_sig(1) << " " << log_sig(2) << " ";
+    gps_log << log_prior(0) << " " << log_prior(1) << " " << log_prior(2) << " ";
+    gps_log << log_chi << " " << log_thr << " " << accepted << " ";
+    gps_log << data.meas(0) << " " << data.meas(1) << " " << data.meas(2) << "\n";
   }
-
-  return false;
+  return accepted > 0;
 }
 
 bool UpdaterGPS::try_initialization() {
@@ -180,9 +211,10 @@ bool UpdaterGPS::try_initialization() {
     }
   }
 
-  // Return if we do not have at least three GPS measurements
-  if (data_init.size() < 3) {
-    PRINT2(YELLOW "[GPS]: Not enough measurements for initialization (%d of 3).\n" RESET, data_init.size());
+  // Return if we do not have enough GPS measurements (at least 3 for the 4-DOF alignment)
+  int min_meas = std::max(3, state->op->gps->init_min_meas);
+  if ((int)data_init.size() < min_meas) {
+    PRINT2(YELLOW "[GPS]: Not enough measurements for initialization (%d of %d).\n" RESET, data_init.size(), min_meas);
     return false;
   }
 
@@ -217,7 +249,18 @@ bool UpdaterGPS::try_initialization() {
 
   // Initialize our state!
   if (!StateHelper::initialize(state, state->trans_WtoE, x_order, Hx, Hi, R, res, 1e9, "GPS", false)) {
-    // Failed initialization. Remove some measurements
+    // Failed initialization. Remove some measurements (every other one) and retry later; if
+    // that would leave fewer than init_min_meas fixes, drop the whole set instead and let the
+    // vehicle travel init_distance again: an alignment from a handful of fixes is worse than a
+    // late one (measured on sanfer split_01: 3-fix alignments diverged within 30 s).
+    PRINT2(YELLOW "[GPS]: ENU alignment rejected with %d fixes\n" RESET, (int)data_init.size());
+    if ((int)data_stack.size() / 2 < min_meas) {
+      // thin from the old end only (the oldest fix is the one most likely to be stale) and
+      // retry at the next fix; never go below the floor
+      if ((int)data_stack.size() > min_meas)
+        data_stack.erase(data_stack.begin());
+      return false;
+    }
     bool odd = true;
     for (auto i = data_stack.begin(); i != data_stack.end();) {
       if (odd) {

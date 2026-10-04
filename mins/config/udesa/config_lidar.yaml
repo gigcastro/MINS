@@ -13,17 +13,17 @@ lidar:
   init_cov_ex_o: 1e-3     # initial variance of the extrinsic rotation [rad^2]
   init_cov_ex_p: 1e-3     # initial variance of the extrinsic translation [m^2]
   max_range: 30.0         # points farther than this are dropped [m]
-  min_range: 1            # points closer than this are dropped (car body) [m]
+  min_range: 3            # points closer than this are dropped (car body) [m]
   chi2_mult: 1            # multiplier of the 95% chi2 gating threshold (bigger = accept more)
   raw_do_downsample: true
   raw_downsample_size: 2.0  # voxel size for the incoming scan [m] (fewer points = faster, less info)
-  raw_noise: 0.1          # std of the new scan point in the point-to-plane residual [m]
+  raw_noise: 0.5          # std of the new scan point in the point-to-plane residual [m]
   raw_remove_motion_blur: false # required to set v_angles and h_angles correctly
                           # (deskew assumes a fixed ring x azimuth point order; not set for our VLP)
   raw_point_dt: 1e-6      # time between consecutive points, only used for deskew [s]
   map_do_downsample: true
   map_downsample_size: 1  # voxel size of the map [m]
-  map_noise: 0.1          # std of the map neighbor points used to fit each plane [m]
+  map_noise: 0.5          # std of the map neighbor points used to fit each plane [m]
   map_ngbr_num: 5         # nearest map points used to fit the local plane of each scan point
   map_ngbr_max_d: 10.0    # reject if the farthest neighbor is beyond this. SQUARED distance
                           # (ikd-tree returns d^2): 10.0 => ~3.2 m

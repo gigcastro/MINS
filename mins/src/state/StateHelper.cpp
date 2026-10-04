@@ -167,19 +167,35 @@ bool StateHelper::EKFUpdate(shared_ptr<State> state, const VEC_TYPE &H_order, co
   MatrixXd dx_Cov(state->cov.rows(), state->cov.rows());
   dx_Cov.triangularView<Upper>() = (K * M_a.transpose());
 
-  // We should check if we are not positive semi-definitate
+  // We should check if we are not positive semi-definitate.
+  // A diagonal that would go negative by a numerically meaningful amount means the update
+  // is inconsistent: reject it as before. A tiny negative (roundoff on a variable whose
+  // variance has collapsed to ~0, typically a calibration state) used to reject the update
+  // as well, and since the roundoff repeats, EVERY later update of every sensor was
+  // rejected and the filter diverged (sanfer split_01: up to 53k rejected updates in a
+  // run, 4 of 6 repeats). Such entries are floored instead and the update is applied.
+  const double neg_tol = 1e-8;   // [SI units^2] below this the update is really inconsistent
+  const double var_floor = 1e-12;
   VectorXd diag1 = state->cov.diagonal();
   VectorXd diag2 = dx_Cov.diagonal();
   assert(diag1.rows() == diag2.rows());
+  std::vector<int> floored;
   for (int i = 0; i < diag1.rows(); i++) {
-    if (diag1(i) - diag2(i) < 0.0) {
-      PRINT3(RED "StateHelper::EKFUpdate::%s - diagonal has %.2f\n" RESET, type.c_str(), diag1(i) - diag2(i));
+    double d = diag1(i) - diag2(i);
+    if (d < -neg_tol) {
+      PRINT3(RED "StateHelper::EKFUpdate::%s - diagonal %d would become %.3e, update rejected\n" RESET, type.c_str(), i, d);
       return false;
     }
+    if (d < var_floor)
+      floored.push_back(i);
   }
 
   // Update Covariance
   state->cov.triangularView<Upper>() -= dx_Cov;
+  for (int i : floored) {
+    PRINT3(YELLOW "StateHelper::EKFUpdate::%s - diagonal %d floored (%.3e)\n" RESET, type.c_str(), i, state->cov(i, i));
+    state->cov(i, i) = var_floor;
+  }
   state->cov.triangularView<Lower>() = state->cov.triangularView<Upper>().transpose();
 
   // Calculate our delta and update all our active states
