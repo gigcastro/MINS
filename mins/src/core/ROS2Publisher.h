@@ -70,6 +70,9 @@ public:
   /// Publish current IMU state (pose, ang/lin velocities)
   void publish_imu();
 
+  /// Current state time as a ROS stamp (used for odometry, poses and TF)
+  rclcpp::Time state_stamp();
+
   /// Publish the gps measurements
   void publish_gps(GPSData gps, bool isGeodetic);
 

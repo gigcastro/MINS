@@ -126,7 +126,7 @@ ROS2Publisher::ROS2Publisher(shared_ptr<rclcpp::Node> node, shared_ptr<SystemMan
   if (sys->state->op->lidar->enabled) {
     for (int i = 0; i < sys->state->op->lidar->max_n; i++) {
       pub_lidar_cloud.emplace_back();
-      pub_lidar_cloud.back() = node->create_publisher<sensor_msgs::msg::PointCloud2>("/mins/lidar" + to_string(i) + "/points", 2);
+      pub_lidar_cloud.back() = node->create_publisher<sensor_msgs::msg::PointCloud2>("/mins/lidar" + to_string(i) + "/points", 100); // deep history: the raw scans (2-4 MB) are published in bursts by the bag node; downstream mappers must not lose them
       PRINT1("Publishing: %s\n", pub_lidar_cloud.back()->get_topic_name());
       pub_lidar_map.emplace_back();
       pub_lidar_map.back() = node->create_publisher<sensor_msgs::msg::PointCloud2>("/mins/lidar" + to_string(i) + "/map", 2);
@@ -152,6 +152,11 @@ void ROS2Publisher::visualize() {
     publish_lidar_map();
 }
 
+// Stamp for everything derived from the current filter state. MINS processes bags faster than real
+// time, so a wall-clock stamp (rclcpp::Clock().now()) is unrelated to the data time and makes TF
+// lookups at message stamps impossible; use the state time (seconds, double) in nanoseconds.
+rclcpp::Time ROS2Publisher::state_stamp() { return rclcpp::Time((int64_t)std::llround(sys->state->time * 1e9)); }
+
 void ROS2Publisher::publish_imu() {
 
   // Return if we have not initialized
@@ -165,7 +170,7 @@ void ROS2Publisher::publish_imu() {
   odom.block(7, 0, 3, 1) = sys->state->imu->vel();
   odom.block(10, 0, 3, 1) = sys->state->have_cpi(sys->state->time) ? sys->state->cpis.at(sys->state->time).w : Vector3d::Zero();
   nav_msgs::msg::Odometry odomIinG = ROS2Helper::ToOdometry(odom);
-  odomIinG.header.stamp = rclcpp::Time(sys->state->time);
+  odomIinG.header.stamp = state_stamp();
   odomIinG.header.frame_id = "global";
   odomIinG.child_frame_id = "imu";
 
@@ -197,7 +202,9 @@ void ROS2Publisher::publish_tf() {
   // Publish our transform on TF
   // NOTE: since we use JPL we have an implicit conversion to Hamilton when we publish
   // NOTE: a rotation from GtoI in JPL has the same xyzw as a ItoG Hamilton rotation
+  const rclcpp::Time stamp = state_stamp();
   auto trans = ROS2Helper::Pose2TF(sys->state->imu->pose(), false);
+  trans.header.stamp = stamp;
   trans.header.frame_id = "global";
   trans.child_frame_id = "imu";
   mTfBr->sendTransform(trans);
@@ -206,6 +213,7 @@ void ROS2Publisher::publish_tf() {
   if (sys->state->op->cam->enabled) {
     for (const auto &calib : sys->state->cam_extrinsic) {
       geometry_msgs::msg::TransformStamped trans_calib = ROS2Helper::Pose2TF(calib.second, true);
+      trans_calib.header.stamp = stamp;
       trans_calib.header.frame_id = "imu";
       trans_calib.child_frame_id = "cam" + to_string(calib.first);
       mTfBr->sendTransform(trans_calib);
@@ -215,6 +223,7 @@ void ROS2Publisher::publish_tf() {
   if (sys->state->op->vicon->enabled) {
     for (const auto &calib : sys->state->vicon_extrinsic) {
       geometry_msgs::msg::TransformStamped trans_calib = ROS2Helper::Pose2TF(calib.second, true);
+      trans_calib.header.stamp = stamp;
       trans_calib.header.frame_id = "imu";
       trans_calib.child_frame_id = "vicon" + to_string(calib.first);
       mTfBr->sendTransform(trans_calib);
@@ -224,6 +233,7 @@ void ROS2Publisher::publish_tf() {
   if (sys->state->op->gps->enabled) {
     for (const auto &calib : sys->state->gps_extrinsic) {
       geometry_msgs::msg::TransformStamped trans_calib = ROS2Helper::Pos2TF(calib.second, true);
+      trans_calib.header.stamp = stamp;
       trans_calib.header.frame_id = "imu";
       trans_calib.child_frame_id = "gps" + to_string(calib.first);
       mTfBr->sendTransform(trans_calib);
@@ -233,6 +243,7 @@ void ROS2Publisher::publish_tf() {
   if (sys->state->op->lidar->enabled) {
     for (const auto &calib : sys->state->lidar_extrinsic) {
       geometry_msgs::msg::TransformStamped trans_calib = ROS2Helper::Pose2TF(calib.second, true);
+      trans_calib.header.stamp = stamp;
       trans_calib.header.frame_id = "imu";
       trans_calib.child_frame_id = "lidar" + to_string(calib.first);
       mTfBr->sendTransform(trans_calib);
@@ -241,7 +252,8 @@ void ROS2Publisher::publish_tf() {
 
   if (sys->state->op->wheel->enabled) {
     geometry_msgs::msg::TransformStamped trans_calib = ROS2Helper::Pose2TF(sys->state->wheel_extrinsic, true);
-    trans_calib.header.frame_id = "imu";
+    trans_calib.header.stamp = stamp;
+      trans_calib.header.frame_id = "imu";
     trans_calib.child_frame_id = "wheel";
     mTfBr->sendTransform(trans_calib);
   }
@@ -250,6 +262,7 @@ void ROS2Publisher::publish_tf() {
   int clone_count = 0;
   for (const auto &C : sys->state->clones) {
     geometry_msgs::msg::TransformStamped trans = ROS2Helper::Pose2TF(C.second, false);
+    trans.header.stamp = stamp;
     trans.header.frame_id = "global";
     trans.child_frame_id = "c" + to_string(clone_count++);
     mTfBr->sendTransform(trans);
@@ -269,7 +282,7 @@ void ROS2Publisher::publish_state() {
 
   // Create pose of IMU (note we use the bag time)
   geometry_msgs::msg::PoseWithCovarianceStamped poseIinM = ROS2Helper::ToPoseCov(sys->state->imu->value().block(0, 0, 7, 1));
-  poseIinM.header.stamp = rclcpp::Time(sys->state->time);
+  poseIinM.header.stamp = state_stamp();
   //  poseIinM.header.seq = seq_imu;
   poseIinM.header.frame_id = "global";
 
@@ -427,8 +440,15 @@ void ROS2Publisher::publish_lidar_cloud(std::shared_ptr<mins::PointCloud<mins::P
   sensor_msgs::msg::PointCloud2 output;
   mins::toPC2(*lidar, output);
   output.header.frame_id = "lidar" + lidar->header.frame_id;
-  output.header.stamp = rclcpp::Clock().now();
-  pub_lidar_cloud.at(stoi(lidar->header.frame_id))->publish(output);
+  // Stamp the scan in the estimator (IMU) clock: measurement time (kept in ms by rosPC2pclPC) plus the
+  // current estimate of the lidar time offset. Downstream mappers interpolate /mins/imu/odom (which is
+  // stamped with the state time) at this stamp; a wall-clock stamp would not be comparable to it.
+  int id = stoi(lidar->header.frame_id);
+  double t_imu = (double)lidar->header.stamp / 1000.0;
+  if (sys->state->lidar_dt.count(id))
+    t_imu += sys->state->lidar_dt.at(id)->value()(0);
+  output.header.stamp = rclcpp::Time((int64_t)std::llround(t_imu * 1e9));
+  pub_lidar_cloud.at(id)->publish(output);
 }
 
 void ROS2Publisher::reset_paths() {
@@ -467,7 +487,7 @@ void ROS2Publisher::publish_lidar_map() {
 
     // Publish tf of map
     geometry_msgs::msg::TransformStamped trans;
-    trans.header.stamp = rclcpp::Clock().now();
+    trans.header.stamp = state_stamp();
     geometry_msgs::msg::Quaternion quat;
 
     quat.x = qGtoM(0);
@@ -502,7 +522,7 @@ void ROS2Publisher::publish_lidar_map() {
     sensor_msgs::msg::PointCloud2 map_pointcloud;
     mins::toPC2(*map_inG, map_pointcloud);
     map_pointcloud.header.frame_id = "global";
-    map_pointcloud.header.stamp = rclcpp::Clock().now();
+    map_pointcloud.header.stamp = state_stamp();
     pub_lidar_map.at(ikd->id)->publish(map_pointcloud);
   }
 }

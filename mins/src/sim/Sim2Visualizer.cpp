@@ -107,7 +107,7 @@ void Sim2Visualizer::publish_groundtruth() {
 
   // Create pose of IMU
   geometry_msgs::msg::PoseStamped poseIinM;
-  poseIinM.header.stamp = rclcpp::Time(sys->state->time);
+  poseIinM.header.stamp = rclcpp::Time((int64_t)std::llround(sys->state->time * 1e9));
   //  poseIinM.header.seq = poses_seq_gt;
   poseIinM.header.frame_id = "global";
   poseIinM.pose.orientation.x = state_gt(1, 0);
