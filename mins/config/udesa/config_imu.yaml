@@ -4,11 +4,9 @@
 # the effective in-car noise is larger (engine/road vibration); values that are too small
 # make the filter over-trust IMU propagation (incl. the unstable vertical channel) and
 # react slowly to aiding measurements. Inflating them 2-10x is common practice on vehicles.
-
-# Values currently inflated by x30
 imu:
-  accel_noise: 0.030215505 # 0.0010071834983987852  # [ m / s^2 / sqrt(Hz) ]   ( accel "white noise" )
-  accel_bias: 0.00041565765507588464 # 1.3855255169196156e-05   # [ m / s^3 / sqrt(Hz) ].  ( accel bias diffusion )
-  gyro_noise: 0.015757738871982833 # 0.0005252579623994278     # [ rad / s / sqrt(Hz) ]   ( gyro "white noise" )
-  gyro_bias: 0.00014086996428346523 # 4.695665476115508e-06       # [ rad / s^2 / sqrt(Hz) ] ( gyro bias diffusion )
+  accel_noise: 0.0010071834983987852  # [ m / s^2 / sqrt(Hz) ]   ( accel "white noise" )
+  accel_bias: 1.3855255169196156e-05   # [ m / s^3 / sqrt(Hz) ].  ( accel bias diffusion )
+  gyro_noise: 0.0005252579623994278     # [ rad / s / sqrt(Hz) ]   ( gyro "white noise" )
+  gyro_bias: 4.695665476115508e-06       # [ rad / s^2 / sqrt(Hz) ] ( gyro bias diffusion )
   topic: "/imu/data"

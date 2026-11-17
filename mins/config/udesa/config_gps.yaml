@@ -9,11 +9,6 @@ gps:
   # split_01, which put every later fix outside the chi2 gate (34 m rms error, GNSS unused).
   # With 50 m the heading error is 0.4 deg.
   init_distance: 50.0     # path length to travel before aligning the world frame to ENU [m]
-  # The delayed ENU alignment halves its fix set every time its chi2 check fails; on sanfer
-  # split_01 (GNSS init on the highway under a bridge, 00:20-00:40) it ended up aligning the yaw
-  # from 3 fixes in about half of the runs and the filter diverged within 30 s. With a floor the
-  # alignment is postponed instead (fork option, default 20 = 2 s of both receivers).
-  init_min_meas: 20       # minimum number of fixes for the ENU alignment
   init_closed_form: false # false = yaw from Horn method, true = 4-DOF RANSAC solution
   init_cov_dt: 5e-1       # initial variance of the time offset [s^2] (used if do_calib_dt)
   init_cov_ex: 5e-2       # initial variance of the lever arm [m^2] (used if do_calib_ext)
@@ -26,7 +21,11 @@ gps:
   #   gate x5: 74 m / z -27 m (0 fixes accepted), x50: 11.6 m / z -31 m (half accepted),
   #   none:    2.8 m / z 0.8 m (all accepted).
   # Revisit (or inflate the IMU noise so a gate becomes consistent) for non-RTK recordings.
-  chi2_mult: 10.0      # multiplier of the 95% chi2 gate. 9999 = never reject, which also disables
+  # NOTE the multiplier is literal (thr = chi2_mult * chi2_95): 9999 still rejects a fix whose
+  # residual exceeds ~280 sigma, i.e. ~4 m with the 1.4 cm RTK covariance (overwrite_noise:
+  # false) -- a 5 m ENU-alignment error then locks every later fix out and the full
+  # loop_sanisidro run diverged that way. 1e9 (~1 km) really never rejects.
+  chi2_mult: 1e9       # multiplier of the 95% chi2 gate. Huge = never reject, which also disables
                           # the built-in fallback (3D rejected -> retry with horizontal only)
   overwrite_noise: false  # false = use the NavSatFix covariance; `noise`/`noise_z` below are only a
                           # fallback for fixes with covariance <= 0. true = always use noise/noise_z

@@ -188,6 +188,16 @@ uint64_t seq_next = 0;                 // sequence number of the next buffered m
 set<uint64_t> used_seq;                // messages already consumed as stereo pairs
 vector<map<double, uint64_t>> cam_map; // {cam[i], {img_time, global seq}}
 
+// Monocular images are held back until the IMU stream has passed their stamp (plus a margin
+// that covers the camera time offset): the estimator interpolates the pose at the image time
+// from the IMU preintegration, which does not exist yet if the image is fed the moment it is
+// read (these cameras are logged ~2 ms after their stamp, the IMU ~4 ms after its own, so in
+// receive order the image comes first). Stereo images are paired through the lookahead
+// window and must be fed in place.
+const double MONO_IMU_MARGIN = 0.05;                     // [s]
+multimap<double, pair<int, Msg>> pending_mono;           // {image stamp, {cam id, message}}
+double newest_imu_time = -1;
+
 // read parameters, init system, open the bags and prime the merged stream
 void system_setup(int argc, char **argv);
 // buffer the next message of the merged stream into the window (false when exhausted)
@@ -198,6 +208,8 @@ double window_span();
 bool find_stereo_pair(double meas_t, int cam_id, uint64_t &pair_seq);
 // feed the camera measurement to the system. automatically finds the stereo pair if any
 bool feed_camera(int cam_id, const Msg &msg);
+// header stamp of an image message [s] (the message time if the header stamp is zero)
+double image_stamp(const Msg &msg);
 
 // Main function
 int main(int argc, char **argv) {
@@ -244,6 +256,13 @@ int main(int argc, char **argv) {
       PRINT1(GREEN "|%.3f,%.3f,%.3f|%.3f,%.3f,%.3f\n" RESET, imu.wm(0), imu.wm(1), imu.wm(2), imu.am(0), imu.am(1), imu.am(2));
       bool visualize = sys->feed_measurement_imu(imu);
       pub->publish_imu();
+      // feed the monocular images this IMU sample now covers
+      newest_imu_time = imu.timestamp;
+      while (!pending_mono.empty() && pending_mono.begin()->first + MONO_IMU_MARGIN <= newest_imu_time) {
+        if (feed_camera(pending_mono.begin()->second.first, pending_mono.begin()->second.second))
+          pub->publish_cam_images({pending_mono.begin()->second.first});
+        pending_mono.erase(pending_mono.begin());
+      }
       if (visualize) {
         pub->visualize();
         sim_viz->publish_groundtruth();
@@ -259,7 +278,10 @@ int main(int argc, char **argv) {
       for (int cam_id = 0; cam_id < op->est->cam->max_n && !is_cam; cam_id++) {
         if (msg.getTopic() == op->est->cam->topic.at(cam_id)) {
           is_cam = true;
-          if (feed_camera(cam_id, msg))
+          bool mono = op->est->cam->stereo_pairs.find(cam_id) == op->est->cam->stereo_pairs.end();
+          if (mono && image_stamp(msg) + MONO_IMU_MARGIN > newest_imu_time)
+            pending_mono.insert({image_stamp(msg), {cam_id, msg}});
+          else if (feed_camera(cam_id, msg))
             pub->publish_cam_images({cam_id});
         }
       }
@@ -488,6 +510,17 @@ bool feed_camera(int cam_id, const Msg &msg) {
     }
   }
   return true;
+}
+
+double image_stamp(const Msg &msg) {
+  auto img_c = msg.instantiate<CompressedImage>();
+  if (img_c != nullptr)
+    return stamp_is_zero(img_c->header.stamp) ? stamp_to_sec(msg.getTime()) : stamp_to_sec(img_c->header.stamp);
+  auto img_i = msg.instantiate<Image>();
+  if (img_i != nullptr)
+    return stamp_is_zero(img_i->header.stamp) ? stamp_to_sec(msg.getTime()) : stamp_to_sec(img_i->header.stamp);
+  PRINT4(RED "Image topic has unmatched message types!. Exiting.\n" RESET);
+  exit(EXIT_FAILURE);
 }
 
 bool find_stereo_pair(double meas_t, int cam_id, uint64_t &pair_seq) {
