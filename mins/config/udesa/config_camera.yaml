@@ -2,13 +2,22 @@
 
 cam:
   enabled: true
+  # cam0/cam1 = the stereo pair /cam1+/cam5. The monocular /cam2, /cam3, /cam4 (20 Hz, own tick
+  # clocks, constant stamp offset absorbed by do_calib_dt) are configured below as cam2..cam4
+  # and enabled by raising max_n. Measured on 60 s of loop_sanisidro split_01 (n_pts 500) they
+  # add nothing to the stereo+lidar+wheel+GNSS solution (2.4 m / 0.2 m rms either way) and cost
+  # a lot: stereo only ~1.9x real time, +cam2+cam3 ~0.5x, all five ~0.2x. They also need a
+  # longer clone window or the GNSS ENU alignment never gets enough interpolable fixes:
+  # est.window_size 3.0 for one or two extra cameras, 6.0 for all three (1.0 is fine for stereo).
   max_n: 2                # number of cameras (cam0..cam{max_n-1})
   use_stereo: true        # track the pair jointly (stereo KLT); the pair shares ONE time offset
   stereo_pair: [0, 1]     # camera ids forming stereo pairs, flattened [a0, b0, a1, b1, ...]
   do_calib_ext: true      # estimate camera-IMU extrinsics online
   do_calib_int: true      # estimate intrinsics + distortion online
   do_calib_dt: true       # estimate camera-IMU time offset online
-  n_pts: 1500             # target number of tracked KLT features per image
+  n_pts: 1500             # target number of tracked KLT features per image. 500 halves the camera
+                          # time and looked equivalent on 60 s, but on 5 min of loop_sanisidro the
+                          # weaker pre-GNSS estimate misaligned the ENU frame and the run diverged.
   fast: 30                # FAST corner threshold for new feature extraction
   grid_x: 15              # extraction grid (columns) to spread features over the image
   grid_y: 15              # extraction grid (rows)
@@ -64,5 +73,49 @@ cam1:
   intrinsics: [719.4705213043574, 717.2456646487565, 621.392121670097, 515.3163787488853]
   resolution: [1224, 1026]
   topic: "/cam5/image_raw/compressed"
+  compressed: true
+# Monocular cameras. Intrinsics/distortion from the lidar-camera calibration (calib_camN.json,
+# plumb_bob = radtan k1 k2 p1 p2, computed on the published 1224x1026 / 1024x770 JPEGs).
+# T_imu_cam = inv(T_lidar_imu) * T_lidar_camN with the transforms of extrinsecas.launch (the same
+# chain reproduces the Kalibr stereo entries above to ~3 deg / 9 cm). Optical axes in the IMU
+# frame: cam2 left-forward (0.46,-0.89,0.03), cam3 right-forward (0.40,0.90,0.18), cam4 rear (-1,0,0).
+cam2:
+  timeoffset:  0.0
+  T_imu_cam:
+    - [ 0.88738591, -0.01414360,  0.46081038,  1.32794618]
+    - [ 0.46102606,  0.02482258, -0.88703935, -0.28691081]
+    - [ 0.00110742,  0.99959182,  0.02854778, -0.91726699]
+    - [ 0.0,         0.0,         0.0,         1.0]
+  distortion_coeffs: [-0.1041235848472772, 0.3189447020175449, -0.0007022295142932398, -0.0018520312668772842]
+  distortion_model: radtan
+  intrinsics: [1225.5212789690781, 1224.5996003233902, 613.6038657294005, 511.70932866572656]
+  resolution: [1224, 1026]
+  topic: "/cam2/image_raw/compressed"
+  compressed: true
+cam3:
+  timeoffset:  0.0
+  T_imu_cam:
+    - [-0.91673006, -0.05957150,  0.39504081,  1.32949943]
+    - [ 0.39932852, -0.16620535,  0.90161661,  0.41927293]
+    - [ 0.01194725,  0.98429011,  0.17615404, -0.86624118]
+    - [ 0.0,         0.0,         0.0,         1.0]
+  distortion_coeffs: [-0.1280034062922682, 0.29112491338475655, 0.001051824631365859, -0.002012572923138047]
+  distortion_model: radtan
+  intrinsics: [1188.2802027703462, 1186.8705325975682, 610.7250372657526, 529.2955682696249]
+  resolution: [1224, 1026]
+  topic: "/cam3/image_raw/compressed"
+  compressed: true
+cam4:
+  timeoffset:  0.0
+  T_imu_cam:
+    - [-0.02049567, -0.01460844, -0.99968321,  0.90310211]
+    - [-0.99954821,  0.02228574,  0.02016724,  0.04855564]
+    - [ 0.02198407,  0.99964491, -0.01505861, -0.87120205]
+    - [ 0.0,         0.0,         0.0,         1.0]
+  distortion_coeffs: [-0.5840625115808062, 0.29766770482747723, -0.004037944078151812, 0.0054247707128584075]
+  distortion_model: radtan
+  intrinsics: [1351.886124993349, 1349.3009693488311, 475.71875398957394, 409.26245231702507]
+  resolution: [1024, 770]
+  topic: "/cam4/image_raw/compressed"
   compressed: true
 

@@ -21,7 +21,11 @@ gps:
   #   gate x5: 74 m / z -27 m (0 fixes accepted), x50: 11.6 m / z -31 m (half accepted),
   #   none:    2.8 m / z 0.8 m (all accepted).
   # Revisit (or inflate the IMU noise so a gate becomes consistent) for non-RTK recordings.
-  chi2_mult: 9999      # multiplier of the 95% chi2 gate. 9999 = never reject, which also disables
+  # NOTE the multiplier is literal (thr = chi2_mult * chi2_95): 9999 still rejects a fix whose
+  # residual exceeds ~280 sigma, i.e. ~4 m with the 1.4 cm RTK covariance (overwrite_noise:
+  # false) -- a 5 m ENU-alignment error then locks every later fix out and the full
+  # loop_sanisidro run diverged that way. 1e9 (~1 km) really never rejects.
+  chi2_mult: 1e9       # multiplier of the 95% chi2 gate. Huge = never reject, which also disables
                           # the built-in fallback (3D rejected -> retry with horizontal only)
   overwrite_noise: false  # false = use the NavSatFix covariance; `noise`/`noise_z` below are only a
                           # fallback for fixes with covariance <= 0. true = always use noise/noise_z
